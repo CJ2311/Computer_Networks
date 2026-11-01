@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 
 from backend.app.routers.equipment import router as equipment_router
-
+from backend.app.routers.asset import router as asset_router
 
 app = FastAPI(
     title="IoT Laboratory Inventory Management System",
@@ -26,3 +26,4 @@ def health_check():
 
 # Register equipment endpoints
 app.include_router(equipment_router)
+app.include_router(asset_router)

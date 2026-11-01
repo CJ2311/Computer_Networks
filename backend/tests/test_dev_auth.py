@@ -47,3 +47,80 @@ def test_dev_auth_disabled(monkeypatch):
         require_local_dev_auth(request)
 
     assert error.value.status_code == 403
+
+from unittest.mock import patch
+
+from backend.app.auth.dependencies import get_current_user
+from backend.app.database import SessionLocal
+
+
+def test_get_current_dev_admin():
+    request = Mock()
+    request.client.host = "127.0.0.1"
+
+    with SessionLocal() as db:
+        with patch(
+            "backend.app.auth.dependencies.is_dev_auth_enabled",
+            return_value=True,
+        ):
+            user = get_current_user(
+                request=request,
+                x_dev_user="DEV-ADMIN",
+                db=db,
+            )
+
+    assert user.college_id == "DEV-ADMIN"
+    assert user.role == "ADMIN"
+    assert user.is_active is True
+
+@pytest.mark.parametrize(
+    "dev_user",
+    [
+        None,
+        "DEV-UNKNOWN",
+        "CB.EN.U4CSE12345",
+    ],
+)
+def test_invalid_dev_users(dev_user):
+    request = Mock()
+    request.client.host = "127.0.0.1"
+
+    with SessionLocal() as db:
+        with patch(
+            "backend.app.auth.dependencies.is_dev_auth_enabled",
+            return_value=True,
+        ):
+            with pytest.raises(HTTPException) as error:
+                get_current_user(
+                    request=request,
+                    x_dev_user=dev_user,
+                    db=db,
+                )
+
+    assert error.value.status_code == 401
+
+def test_inactive_dev_user():
+    request = Mock()
+    request.client.host = "127.0.0.1"
+
+    mock_db = Mock()
+
+    inactive_user = Mock()
+    inactive_user.college_id = "DEV-STUDENT"
+    inactive_user.is_active = False
+
+    mock_db.scalar.return_value = inactive_user
+
+    with patch(
+        "backend.app.auth.dependencies.is_dev_auth_enabled",
+        return_value=True,
+    ):
+        with pytest.raises(HTTPException) as error:
+            get_current_user(
+                request=request,
+                x_dev_user="DEV-STUDENT",
+                db=mock_db,
+            )
+
+    assert error.value.status_code == 403
+    assert error.value.detail == "User account is inactive"

@@ -7,6 +7,13 @@ from backend.app.database import get_db
 from backend.app.models.equipment import Equipment
 from backend.app.schemas.equipment import EquipmentResponse
 
+from fastapi import status
+
+from backend.app.auth.dependencies import require_roles
+from backend.app.models.user import UserRole
+from backend.app.schemas.equipment import EquipmentCreate
+from backend.app.services.equipment import create_equipment
+
 
 router = APIRouter(
     prefix="/equipment",
@@ -46,3 +53,21 @@ def get_equipment(
         )
 
     return equipment
+
+@router.post(
+    "",
+    response_model=EquipmentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def register_equipment(
+    equipment_data: EquipmentCreate,
+    db: Session = Depends(get_db),
+    _authorized_user=Depends(
+        require_roles(
+            UserRole.ADMIN,
+            UserRole.FACULTY,
+            UserRole.LAB_ASSISTANT,
+        )
+    ),
+):
+    return create_equipment(db, equipment_data)

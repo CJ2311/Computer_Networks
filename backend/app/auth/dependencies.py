@@ -3,6 +3,7 @@ from ipaddress import ip_address
 from fastapi import HTTPException, Request, status
 
 from backend.app.auth.config import is_dev_auth_enabled
+from backend.app.models.user import UserRole
 
 
 def require_local_dev_auth(request: Request) -> None:
@@ -83,3 +84,26 @@ def get_current_user(
         )
 
     return user
+
+from collections.abc import Callable
+from fastapi import Depends
+
+
+def require_roles(*allowed_roles: UserRole) -> Callable:
+    """Allow access only to users with permitted roles."""
+
+    def check_role(
+        current_user: User = Depends(get_current_user),
+    ) -> User:
+
+        if current_user.role not in {
+            role.value for role in allowed_roles
+        }:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to perform this action",
+            )
+
+        return current_user
+
+    return check_role
