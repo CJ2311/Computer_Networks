@@ -1,12 +1,16 @@
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
+from sqlalchemy import select
 
+from backend.app.models.equipment import EquipmentAsset
 from backend.app.auth.dependencies import require_roles
 from backend.app.database import get_db
 from backend.app.models.user import UserRole
 from backend.app.schemas.asset import AssetCreate, AssetResponse
 from backend.app.services.asset import create_asset
 
+from uuid import UUID
+from fastapi import HTTPException
 
 router = APIRouter(
     prefix="/assets",
@@ -31,3 +35,48 @@ def register_asset(
     ),
 ):
     return create_asset(db, asset_data)
+
+@router.get(
+    "",
+    response_model=list[AssetResponse],
+)
+def list_assets(
+    db: Session = Depends(get_db),
+    _authorized_user=Depends(
+        require_roles(
+            UserRole.ADMIN,
+            UserRole.FACULTY,
+            UserRole.LAB_ASSISTANT,
+        )
+    ),
+):
+    return db.scalars(
+        select(EquipmentAsset)
+        .order_by(EquipmentAsset.asset_code)
+        .limit(100)
+    ).all()
+
+@router.get(
+    "/{asset_id}",
+    response_model=AssetResponse,
+)
+def get_asset(
+    asset_id: UUID,
+    db: Session = Depends(get_db),
+    _authorized_user=Depends(
+        require_roles(
+            UserRole.ADMIN,
+            UserRole.FACULTY,
+            UserRole.LAB_ASSISTANT,
+        )
+    ),
+):
+    asset = db.get(EquipmentAsset, asset_id)
+
+    if asset is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Asset not found",
+        )
+
+    return asset
