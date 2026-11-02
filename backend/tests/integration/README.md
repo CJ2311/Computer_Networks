@@ -1,5 +1,67 @@
 # PostgreSQL checkout integration tests
 
+## Borrowing history and overdue tracking
+
+`GET /checkouts` lists borrowing records. `GET /checkouts/{checkout_id}` retrieves
+one record. Both require existing authentication and an active STUDENT, FACULTY,
+LAB_ASSISTANT, or ADMIN account. Students are restricted to their own borrower ID
+in SQL before ordering/pagination. A foreign `student_id` filter returns 403;
+another student's checkout ID returns the same 404 as a nonexistent ID.
+
+Faculty, lab assistants, and administrators currently have laboratory-wide read
+access. **This is a temporary authorization limitation: lab-specific access must
+be implemented once assigned-lab scopes exist.** No department or lab boundary
+is inferred from the issuing staff member. This does not change permissions for
+creating checkouts or recording returns.
+
+List filters combine with AND:
+
+| Parameter | Meaning |
+| --- | --- |
+| equipment_id | Equipment definition UUID |
+| asset_id | Physical asset UUID |
+| student_id | Borrower UUID; students may specify only their own |
+| status | BORROWED or RETURNED |
+| overdue | true: currently overdue; false: everything not currently overdue |
+| checked_out_from | Inclusive checkout timestamp, with timezone |
+| checked_out_before | Exclusive checkout timestamp, with timezone |
+| limit | Default 25; range 1 through 100 |
+| offset | Default 0; nonnegative, at most PostgreSQL's signed 64-bit maximum |
+
+Dates normalize to UTC. The start must precede the end when both are supplied.
+Malformed filters, unknown query parameters, and invalid pagination return 422.
+`status=RETURNED&overdue=true` produces an empty list. A valid filter with no
+matching records also produces an empty list; no borrower existence lookup is
+performed. Sorting is checked_out_at DESC, id DESC, including ties.
+
+Responses expose loan/asset/equipment identifiers, asset code, equipment name,
+borrower and staff UUIDs, status, and timestamps. User profiles, names, college
+IDs, email addresses, and free-form checkout/return notes are not exposed.
+List responses contain items, limit, offset, has_more, and as_of; detail responses
+contain a single item with as_of. The service fetches at most limit + 1 rows and
+does not issue an unrestricted total-count query.
+
+Each request reads PostgreSQL clock_timestamp() once and reuses that instant as
+as_of in all SQL calculations and filters:
+
+- is_currently_overdue: BORROWED and due_at < as_of.
+- was_returned_late: RETURNED and returned_at > due_at.
+
+Equality is on time. Historical late returns never enter the currently overdue
+filter. The existing return endpoint's is_overdue field retains its original
+meaning and schema. No overdue flags are stored or updated by these GETs.
+
+These endpoints use SELECTs without row locks, flushes, or commits, with autoflush
+suppressed. Integration GET sessions additionally enforce a read-only transaction
+to catch accidental writes. Tests cover two authenticated students, all authorized
+staff roles, filters, pagination, data minimization, one clock lookup per request,
+exact deadline boundaries, timezone equivalence, and unchanged database records.
+
+Offset pagination is deterministic for a fixed dataset but is not a snapshot
+across requests; concurrent inserts can shift pages. Large offsets may become
+expensive. Cursor pagination and query-plan-driven indexes are future work if
+data volume warrants them. Existing migrations and schemas are unchanged.
+
 ## Equipment returns
 
 `POST /checkouts/{checkout_id}/return` accepts an explicit `condition_status`

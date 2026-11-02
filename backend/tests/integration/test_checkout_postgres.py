@@ -9,13 +9,14 @@ import os
 from pathlib import Path
 import time
 from uuid import UUID, uuid4
+from urllib.parse import urlencode
 
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 import pytest
-from sqlalchemy import create_engine, func, inspect, select, text
+from sqlalchemy import create_engine, event, func, inspect, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
@@ -27,6 +28,8 @@ from backend.app.routers.checkout import router
 from backend.app.services.checkout import create_checkout
 from backend.app.services.checkout import record_return
 from backend.app.schemas.checkout import ReturnCreate
+from backend.app.schemas.borrowing_history import HistoryFilters
+from backend.app.services.borrowing_history import get_borrowing_history, list_borrowing_history
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -161,21 +164,23 @@ def api(database, monkeypatch):
     app = FastAPI()
     app.include_router(router)
 
-    def sessions():
+    def sessions(request: Request):
         with Session(database, autoflush=False, expire_on_commit=False) as db:
+            if request.method == "GET":
+                db.execute(text("SET TRANSACTION READ ONLY"))
             yield db
 
     app.dependency_overrides[get_db] = sessions
 
-    def request(payload, dev_user="DEV-ASSISTANT", path="/checkouts"):
+    def request(payload=None, dev_user="DEV-ASSISTANT", path="/checkouts", method="POST", query=None):
         async def run():
             body = json.dumps(payload).encode()
             headers = [(b"content-type", b"application/json")]
             if dev_user is not None:
                 headers.append((b"x-dev-user", dev_user.encode()))
             scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
-                     "method": "POST", "scheme": "http", "path": path,
-                     "raw_path": path.encode(), "query_string": b"", "root_path": "",
+                     "method": method, "scheme": "http", "path": path,
+                     "raw_path": path.encode(), "query_string": urlencode(query or {}, doseq=True).encode(), "root_path": "",
                      "headers": headers, "client": ("127.0.0.1", 12345),
                      "server": ("127.0.0.1", 80)}
             messages = []
@@ -472,6 +477,260 @@ def test_duplicate_return_preserves_first_return_and_new_loan(database, records,
         asset = db.get(EquipmentAsset, records["asset"])
         assert asset.condition_status == "WORKING"
         assert asset.availability_status == ("BORROWED" if reborrow else "AVAILABLE")
+
+
+@pytest.fixture
+def history_records(database, records):
+    """Two borrowers, two equipment definitions, active/late/on-time history."""
+    with Session(database) as db:
+        now = db.scalar(select(func.clock_timestamp()))
+        other = User(id=uuid4(), college_id="OTHER-STUDENT", full_name="Private Name",
+                     email="private@example.invalid", role="STUDENT", is_active=True)
+        equipment = [Equipment(id=uuid4(), name=f"History sensor {i}", category="IoT",
+                               tracking_type="INDIVIDUAL", default_location="Test lab") for i in range(2)]
+        db.add_all([other, *equipment])
+        db.flush()
+        specifications = {
+            "A": (records["users"]["STUDENT"], 0, -1 / 24, 1, None),
+            "B": (records["users"]["STUDENT"], 0, -2, -1, None),
+            "C": (records["users"]["STUDENT"], 1, -4, -3, -2),
+            "D": (other.id, 1, -4, 1, -2),
+            "E": (other.id, 0, -1 / 48, 1, None),
+            "F": (records["users"]["STUDENT"], 1, -4, -2, -2),
+        }
+        loans, assets = {}, {}
+        for name, (student, equipment_index, issued_days, due_days, returned_days) in specifications.items():
+            asset = EquipmentAsset(id=uuid4(), equipment_id=equipment[equipment_index].id,
+                                   asset_code="HISTORY-" + name, location="Test lab",
+                                   availability_status="BORROWED" if returned_days is None else "AVAILABLE")
+            db.add(asset)
+            db.flush()
+            checkout = EquipmentCheckout(
+                id=uuid4(), asset_id=asset.id, student_id=student,
+                issued_by=records["users"]["LAB_ASSISTANT"],
+                checked_out_at=now + timedelta(days=issued_days), due_at=now + timedelta(days=due_days),
+                returned_at=None if returned_days is None else now + timedelta(days=returned_days),
+                returned_to=None if returned_days is None else records["users"]["FACULTY"],
+                status="BORROWED" if returned_days is None else "RETURNED",
+                notes="Internal inspection details",
+            )
+            db.add(checkout)
+            loans[name], assets[name] = checkout.id, asset.id
+        db.commit()
+        return dict(now=now, loans=loans, assets=assets, equipment=[e.id for e in equipment],
+                    own=records["users"]["STUDENT"], other=other.id)
+
+
+@pytest.mark.parametrize("issuer", ["DEV-ADMIN", "DEV-FACULTY", "DEV-ASSISTANT"])
+def test_history_staff_permissions_and_minimal_projection(database, api, history_records, issuer):
+    data = history_records
+    status, page = api(dev_user=issuer, method="GET")
+    assert status == 200
+    assert {item["id"] for item in page["items"]} == {str(i) for i in data["loans"].values()}
+    assert page["limit"] == 25 and page["offset"] == 0 and not page["has_more"]
+    assert datetime.fromisoformat(page["as_of"]).tzinfo is not None
+    for item in page["items"]:
+        assert not {"notes", "full_name", "email", "college_id"} & item.keys()
+    assert "Private Name" not in json.dumps(page)
+    assert "Internal inspection details" not in json.dumps(page)
+    status, detail = api(dev_user=issuer, method="GET", path=f"/checkouts/{data['loans']['D']}")
+    assert status == 200 and detail["student_id"] == str(data["other"])
+
+
+def test_history_student_isolation_before_pagination(api, history_records):
+    data = history_records
+    own_ids = {str(data["loans"][name]) for name in "ABCF"}
+    status, page = api(dev_user="DEV-STUDENT", method="GET", query={"limit": 1})
+    assert status == 200 and len(page["items"]) == 1
+    assert page["items"][0]["id"] == str(data["loans"]["A"])
+    assert page["has_more"] is True  # Newest global record E belongs to someone else.
+    status, page = api(dev_user="DEV-STUDENT", method="GET", query={"student_id": str(data["own"])})
+    assert status == 200 and {item["id"] for item in page["items"]} == own_ids
+    assert api(dev_user="DEV-STUDENT", method="GET", query={"student_id": str(data["other"])})[0] == 403
+    for name in "DE":
+        status, body = api(dev_user="DEV-STUDENT", method="GET", path=f"/checkouts/{data['loans'][name]}")
+        assert status == 404 and body == {"detail": "Checkout not found"}
+    assert api(dev_user="DEV-STUDENT", method="GET", path=f"/checkouts/{uuid4()}")[0] == 404
+    assert api(dev_user="DEV-STUDENT", method="GET", path=f"/checkouts/{data['loans']['A']}")[0] == 200
+
+
+def test_history_second_authenticated_student_is_isolated(database, records, api, history_records):
+    data = history_records
+    second_id = records["users"]["FACULTY"]
+    # Change fixture data only: existing dev auth resolves the real persisted role.
+    with Session(database) as db:
+        db.get(User, second_id).role = "STUDENT"
+        for name in "DE":
+            db.get(EquipmentCheckout, data["loans"][name]).student_id = second_id
+        db.commit()
+    status, page = api(dev_user="DEV-FACULTY", method="GET")
+    assert status == 200
+    assert {item["id"] for item in page["items"]} == {str(data["loans"][n]) for n in "DE"}
+    assert api(dev_user="DEV-FACULTY", method="GET", query={"student_id": str(data["own"])})[0] == 403
+    assert api(dev_user="DEV-FACULTY", method="GET", path=f"/checkouts/{data['loans']['A']}")[0] == 404
+
+
+@pytest.mark.parametrize("case", [
+    "active", "returned", "overdue", "not_overdue", "returned_overdue", "equipment0", "equipment1",
+    "asset", "own", "other", "from_inclusive", "before_exclusive", "combined", "unknown", "empty_page",
+])
+def test_history_filters_and_combinations(api, history_records, case):
+    d = history_records
+    cases = {
+        "active": ({"status": "BORROWED"}, "ABE"),
+        "returned": ({"status": "RETURNED"}, "CDF"),
+        "overdue": ({"overdue": "true"}, "B"),
+        "not_overdue": ({"overdue": "false"}, "ACDEF"),
+        "returned_overdue": ({"status": "RETURNED", "overdue": "true"}, ""),
+        "equipment0": ({"equipment_id": str(d["equipment"][0])}, "ABE"),
+        "equipment1": ({"equipment_id": str(d["equipment"][1])}, "CDF"),
+        "asset": ({"asset_id": str(d["assets"]["C"])}, "C"),
+        "own": ({"student_id": str(d["own"])}, "ABCF"),
+        "other": ({"student_id": str(d["other"])}, "DE"),
+        "from_inclusive": ({"checked_out_from": (d["now"] - timedelta(days=2)).isoformat()}, "ABE"),
+        "before_exclusive": ({"checked_out_before": (d["now"] - timedelta(days=2)).isoformat()}, "CDF"),
+        "combined": ({"equipment_id": str(d["equipment"][1]), "student_id": str(d["own"]),
+                      "status": "RETURNED", "checked_out_from": (d["now"] - timedelta(days=5)).isoformat(),
+                      "checked_out_before": (d["now"] - timedelta(days=3)).isoformat()}, "CF"),
+        "unknown": ({"equipment_id": str(uuid4())}, ""),
+        "empty_page": ({"offset": 999}, ""),
+    }
+    query, expected = cases[case]
+    status, response = api(method="GET", query=query)
+    assert status == 200
+    assert {i["id"] for i in response["items"]} == {str(d["loans"][name]) for name in expected}
+    assert not response["has_more"]
+    if case == "overdue":
+        assert all(i["is_currently_overdue"] for i in response["items"])
+
+
+def test_history_pagination_ties_and_timezone_equivalence(database, api, history_records):
+    d = history_records
+    with Session(database) as db:
+        expected = [str(i) for i in db.scalars(select(EquipmentCheckout.id).order_by(
+            EquipmentCheckout.checked_out_at.desc(), EquipmentCheckout.id.desc()
+        )).all()]
+    actual = []
+    for offset in (0, 2, 4):
+        status, page = api(method="GET", query={"limit": 2, "offset": offset})
+        assert status == 200 and page["has_more"] is (offset < 4)
+        actual.extend(item["id"] for item in page["items"])
+    assert actual == expected and len(set(actual)) == 6
+    cutoff = d["now"] - timedelta(days=2)
+    queries = [{"checked_out_from": cutoff.isoformat()},
+               {"checked_out_from": cutoff.astimezone(timezone(timedelta(hours=5, minutes=30))).isoformat()}]
+    pages = [api(method="GET", query=q)[1] for q in queries]
+    assert [i["id"] for i in pages[0]["items"]] == [i["id"] for i in pages[1]["items"]]
+
+
+@pytest.mark.parametrize("query", [
+    {"limit": 0}, {"limit": 101}, {"offset": -1}, {"offset": str(2**63)}, {"status": "OVERDUE"}, {"overdue": "maybe"},
+    {"student_id": "invalid"}, {"equipment_id": "invalid"}, {"asset_id": "invalid"},
+    {"checked_out_from": "2026-11-02T12:00:00"}, {"checked_out_before": "invalid"},
+    {"checked_out_from": "2026-11-03T00:00:00Z", "checked_out_before": "2026-11-02T00:00:00Z"},
+    {"unknown": "value"},
+])
+def test_history_invalid_query_parameters(api, records, query):
+    assert api(method="GET", query=query)[0] == 422
+
+
+@pytest.mark.parametrize("issuer, inactive", [(None, False), ("DEV-UNKNOWN", False),
+    ("DEV-STUDENT", True), ("DEV-ADMIN", True), ("DEV-FACULTY", True), ("DEV-ASSISTANT", True)])
+def test_history_auth_rejections_on_both_endpoints(database, api, records, history_records, issuer, inactive):
+    if inactive:
+        with Session(database) as db:
+            user = db.scalar(select(User).where(User.college_id == issuer))
+            user.is_active = False
+            db.commit()
+    expected = 403 if inactive else 401
+    assert api(dev_user=issuer, method="GET")[0] == expected
+    assert api(dev_user=issuer, method="GET", path=f"/checkouts/{history_records['loans']['A']}")[0] == expected
+
+
+def test_history_is_read_only_and_uses_one_clock_per_request(database, api, history_records):
+    def snapshot():
+        with database.connect() as connection:
+            return (
+                connection.execute(select(EquipmentCheckout.__table__).order_by(EquipmentCheckout.id)).all(),
+                connection.execute(select(EquipmentAsset.__table__).order_by(EquipmentAsset.id)).all(),
+            )
+
+    before = snapshot()
+    statements = []
+
+    def record(connection, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(database, "before_cursor_execute", record)
+    try:
+        # The API fixture also enforces SET TRANSACTION READ ONLY for these GETs.
+        assert api(method="GET")[0] == 200
+        assert api(method="GET", path=f"/checkouts/{history_records['loans']['B']}")[0] == 200
+    finally:
+        event.remove(database, "before_cursor_execute", record)
+    assert snapshot() == before
+    assert sum("clock_timestamp()" in sql for sql in statements) == 2
+    assert all(sql.lstrip().upper().startswith(("SELECT", "SET TRANSACTION READ ONLY")) for sql in statements)
+    assert all("FOR UPDATE" not in sql.upper() for sql in statements)
+
+
+def test_history_exact_deadline_boundaries_with_database_generated_clock(database, records, history_records):
+    from unittest.mock import patch
+
+    d = history_records
+    with Session(database) as db:
+        # Obtain the fixed evaluation instant from PostgreSQL, not the test host.
+        as_of = db.scalar(select(func.clock_timestamp()))
+        for name, delta in (("A", 0), ("B", -1), ("E", 1)):
+            db.get(EquipmentCheckout, d["loans"][name]).due_at = as_of + timedelta(microseconds=delta)
+        for name, delta in (("C", 1), ("D", 0), ("F", -1)):
+            checkout = db.get(EquipmentCheckout, d["loans"][name])
+            checkout.returned_at = checkout.due_at + timedelta(microseconds=delta)
+        db.commit()
+    with Session(database, autoflush=False) as db:
+        staff = db.get(User, records["users"]["FACULTY"])
+        # Freeze only the clock lookup; all history calculations/filters run in SQL.
+        with patch.object(db, "scalar", return_value=as_of) as clock:
+            result = list_borrowing_history(db, staff, HistoryFilters())
+        clock.assert_called_once()
+        by_id = {item.id: item for item in result.items}
+        assert not by_id[d["loans"]["A"]].is_currently_overdue
+        assert by_id[d["loans"]["B"]].is_currently_overdue
+        assert not by_id[d["loans"]["E"]].is_currently_overdue
+        assert by_id[d["loans"]["C"]].was_returned_late
+        assert not by_id[d["loans"]["D"]].was_returned_late
+        assert not by_id[d["loans"]["F"]].was_returned_late
+        with patch.object(db, "scalar", return_value=as_of):
+            page = list_borrowing_history(db, staff, HistoryFilters(overdue=True))
+        assert [item.id for item in page.items] == [d["loans"]["B"]]
+
+
+def test_history_dynamic_overdue_and_historical_lateness(database, api, history_records):
+    d = history_records
+    status, detail = api(method="GET", path=f"/checkouts/{d['loans']['C']}")
+    assert status == 200 and detail["was_returned_late"] and not detail["is_currently_overdue"]
+    # Change only a test record's deadline; the next read must recompute overdue.
+    with Session(database) as db:
+        db.get(EquipmentCheckout, d["loans"]["A"]).due_at = db.scalar(select(func.clock_timestamp())) - timedelta(minutes=1)
+        db.commit()
+    status, detail = api(method="GET", path=f"/checkouts/{d['loans']['A']}")
+    assert status == 200 and detail["is_currently_overdue"] and not detail["was_returned_late"]
+
+
+def test_history_maximum_page_size(database, api, records, history_records):
+    d = history_records
+    with Session(database) as db:
+        for _ in range(101):
+            db.add(EquipmentCheckout(
+                asset_id=d["assets"]["A"], student_id=d["own"], issued_by=records["users"]["FACULTY"],
+                checked_out_at=d["now"] - timedelta(days=5), due_at=d["now"] - timedelta(days=4),
+                returned_at=d["now"] - timedelta(days=4), returned_to=records["users"]["FACULTY"], status="RETURNED",
+            ))
+        db.commit()
+    status, page = api(method="GET", query={"limit": 100})
+    assert status == 200 and len(page["items"]) == 100 and page["has_more"] is True
+    status, page = api(method="GET", query={"limit": 100, "offset": 100})
+    assert status == 200 and len(page["items"]) == 7 and page["has_more"] is False
 
 
 def test_return_real_foreign_key_failure_rolls_back(database, records, borrowed_checkout):
