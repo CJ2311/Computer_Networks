@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -24,3 +25,22 @@ class CheckoutResponse(BaseModel):
     returned_to: UUID | None
     status: str
     notes: str | None
+
+
+ReturnCondition = Literal["WORKING", "DAMAGED", "UNDER_REPAIR"]
+
+
+class ReturnCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    condition_status: ReturnCondition
+    notes: str | None = Field(default=None, max_length=1000)
+
+
+class ReturnResponse(CheckoutResponse):
+    returned_at: datetime
+    returned_to: UUID
+    status: Literal["RETURNED"]
+    condition_status: ReturnCondition
+    availability_status: Literal["AVAILABLE", "RESERVED"]
+    is_overdue: bool

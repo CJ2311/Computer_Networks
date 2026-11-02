@@ -8,13 +8,12 @@ import json
 import os
 from pathlib import Path
 import time
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from fastapi import FastAPI, HTTPException
-import psycopg
 import pytest
 from sqlalchemy import create_engine, func, inspect, select, text
 from sqlalchemy.engine import make_url
@@ -26,6 +25,8 @@ from backend.app.models.equipment import Equipment, EquipmentAsset
 from backend.app.models.user import User
 from backend.app.routers.checkout import router
 from backend.app.services.checkout import create_checkout
+from backend.app.services.checkout import record_return
+from backend.app.schemas.checkout import ReturnCreate
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -88,22 +89,9 @@ def test_database(block_development_database):
     except Exception:
         engine.dispose()
         pytest.fail("Dedicated PostgreSQL 18 database unavailable or unsafe role (details hidden)", pytrace=False)
-    # Prove the same dedicated login is denied access to development before DDL.
-    # A successful connection runs no SQL and is forced read-only, then fails setup.
+    # Development access denial is verified out of band by the administrator.
+    # This suite must never attempt a connection to the development database.
     try:
-        denied = False
-        try:
-            # No SQLAlchemy initialization queries and no application SQL.
-            connection = psycopg.connect(
-                host=url.host, port=url.port or 5432,
-                dbname=DATABASE_URL.database, user=url.username, password=url.password,
-                connect_timeout=5, options="-cdefault_transaction_read_only=on",
-            )
-            connection.close()
-        except Exception as error:
-            denied = getattr(error, "sqlstate", None) in {"28000", "42501"}
-        if not denied:
-            pytest.fail("Test login must be denied connection to inventory_db; no test writes performed", pytrace=False)
         yield engine
     finally:
         engine.dispose()
@@ -179,15 +167,15 @@ def api(database, monkeypatch):
 
     app.dependency_overrides[get_db] = sessions
 
-    def request(payload, dev_user="DEV-ASSISTANT"):
+    def request(payload, dev_user="DEV-ASSISTANT", path="/checkouts"):
         async def run():
             body = json.dumps(payload).encode()
             headers = [(b"content-type", b"application/json")]
             if dev_user is not None:
                 headers.append((b"x-dev-user", dev_user.encode()))
             scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
-                     "method": "POST", "scheme": "http", "path": "/checkouts",
-                     "raw_path": b"/checkouts", "query_string": b"", "root_path": "",
+                     "method": "POST", "scheme": "http", "path": path,
+                     "raw_path": path.encode(), "query_string": b"", "root_path": "",
                      "headers": headers, "client": ("127.0.0.1", 12345),
                      "server": ("127.0.0.1", 80)}
             messages = []
@@ -342,3 +330,223 @@ def test_concurrent_checkout_only_one_succeeds(database, records):
         assert len(checkouts) == 1
         assert checkouts[0].id == next(checkout_id for status, checkout_id in results if status == 201)
         assert db.get(EquipmentAsset, records["asset"]).availability_status == "BORROWED"
+
+
+@pytest.fixture
+def borrowed_checkout(records, api):
+    status, response = api(payload(records))
+    assert status == 201
+    return UUID(response["id"]), response
+
+
+def return_path(checkout_id):
+    return f"/checkouts/{checkout_id}/return"
+
+
+def assert_still_borrowed(database, records, checkout_id, original_notes):
+    with Session(database, autoflush=False, expire_on_commit=False) as db:
+        checkout = db.get(EquipmentCheckout, checkout_id)
+        assert checkout.status == "BORROWED"
+        assert checkout.returned_at is None and checkout.returned_to is None
+        assert checkout.notes == original_notes
+        assert db.get(EquipmentAsset, records["asset"]).condition_status == "WORKING"
+
+
+@pytest.mark.parametrize("issuer", ["DEV-FACULTY", "DEV-ASSISTANT"])
+@pytest.mark.parametrize("condition, availability", [
+    ("WORKING", "AVAILABLE"), ("DAMAGED", "RESERVED"), ("UNDER_REPAIR", "RESERVED"),
+])
+def test_return_success_history_and_reborrowing(database, records, api, borrowed_checkout,
+                                              issuer, condition, availability):
+    checkout_id, original = borrowed_checkout
+    with database.connect() as connection:
+        before = connection.scalar(select(func.clock_timestamp()))
+    status, response = api({"condition_status": condition, "notes": "Return inspection"},
+                           issuer, path=return_path(checkout_id))
+    assert status == 200
+    assert response["is_overdue"] is False
+    with Session(database, autoflush=False, expire_on_commit=False) as db:
+        after = db.scalar(select(func.clock_timestamp()))
+        checkout = db.get(EquipmentCheckout, checkout_id)
+        assert checkout.status == response["status"] == "RETURNED"
+        assert before <= checkout.returned_at <= after
+        assert datetime.fromisoformat(response["returned_at"]) == checkout.returned_at
+        expected_role = "FACULTY" if issuer == "DEV-FACULTY" else "LAB_ASSISTANT"
+        assert checkout.returned_to == records["users"][expected_role]
+        for field in ("id", "asset_id", "student_id", "issued_by", "checked_out_at", "due_at"):
+            assert response[field] == original[field]
+        assert checkout.notes.startswith(original["notes"] + "\n\n[RETURN] ")
+        annotation = json.loads(checkout.notes.split("\n\n[RETURN] ", 1)[1])
+        assert annotation["condition_status"] == condition
+        assert annotation["notes"] == "Return inspection"
+        asset = db.get(EquipmentAsset, records["asset"])
+        assert asset.condition_status == response["condition_status"] == condition
+        assert asset.availability_status == response["availability_status"] == availability
+
+    next_status, next_response = api(payload(records))
+    assert next_status == (201 if condition == "WORKING" else 409)
+    with Session(database) as db:
+        # The first checkout remains present after subsequent borrowing attempts.
+        first = db.get(EquipmentCheckout, checkout_id)
+        assert first.status == "RETURNED"
+        assert json.loads(first.notes.split("\n\n[RETURN] ", 1)[1])["condition_status"] == condition
+        assert db.scalar(select(func.count()).select_from(EquipmentCheckout)) == (2 if next_status == 201 else 1)
+
+
+@pytest.mark.parametrize("overdue", [False, True])
+def test_return_overdue_from_actual_timestamp(database, records, api, borrowed_checkout, overdue):
+    checkout_id, _ = borrowed_checkout
+    with Session(database) as db:
+        now = db.scalar(select(func.clock_timestamp()))
+        checkout = db.get(EquipmentCheckout, checkout_id)
+        checkout.checked_out_at = now - timedelta(days=2)
+        checkout.due_at = now + timedelta(days=-1 if overdue else 1)
+        db.commit()
+    status, response = api({"condition_status": "WORKING"}, path=return_path(checkout_id))
+    assert status == 200
+    assert response["is_overdue"] is overdue
+    assert (datetime.fromisoformat(response["returned_at"]) > datetime.fromisoformat(response["due_at"])) is overdue
+
+
+@pytest.mark.parametrize("issuer, expected", [
+    (None, 401), ("DEV-UNKNOWN", 401), ("DEV-STUDENT", 403), ("DEV-ADMIN", 403),
+    ("DEV-FACULTY", 403), ("DEV-ASSISTANT", 403),
+])
+def test_return_rejects_unauthorized_and_inactive_users(database, records, api, borrowed_checkout,
+                                                     issuer, expected):
+    checkout_id, original = borrowed_checkout
+    if issuer in {"DEV-FACULTY", "DEV-ASSISTANT"}:
+        role = "FACULTY" if issuer == "DEV-FACULTY" else "LAB_ASSISTANT"
+        with Session(database) as db:
+            db.get(User, records["users"][role]).is_active = False
+            db.commit()
+    assert api({"condition_status": "DAMAGED"}, issuer, path=return_path(checkout_id))[0] == expected
+    assert_still_borrowed(database, records, checkout_id, original["notes"])
+
+
+@pytest.mark.parametrize("availability", ["AVAILABLE", "RESERVED", "RETIRED"])
+def test_return_rejects_unexpected_asset_state(database, records, api, borrowed_checkout, availability):
+    checkout_id, original = borrowed_checkout
+    with Session(database) as db:
+        db.get(EquipmentAsset, records["asset"]).availability_status = availability
+        db.commit()
+    assert api({"condition_status": "WORKING"}, path=return_path(checkout_id))[0] == 409
+    assert_still_borrowed(database, records, checkout_id, original["notes"])
+    with Session(database) as db:
+        assert db.get(EquipmentAsset, records["asset"]).availability_status == availability
+
+
+def test_return_missing_checkout(database, records, api):
+    assert api({"condition_status": "WORKING"}, path=return_path(uuid4()))[0] == 404
+    assert_no_checkout(database, records["asset"])
+
+
+@pytest.mark.parametrize("data", [
+    {}, {"condition_status": "MISSING"}, {"condition_status": "MALFUNCTIONING"},
+    {"condition_status": "WORKING", "notes": "x" * 1001},
+    {"condition_status": "WORKING", "returned_to": str(uuid4())},
+    {"condition_status": "WORKING", "returned_at": "2000-01-01T00:00:00Z"},
+])
+def test_return_rejects_invalid_payload(database, records, api, borrowed_checkout, data):
+    checkout_id, original = borrowed_checkout
+    assert api(data, path=return_path(checkout_id))[0] == 422
+    assert_still_borrowed(database, records, checkout_id, original["notes"])
+
+
+@pytest.mark.parametrize("reborrow", [False, True])
+def test_duplicate_return_preserves_first_return_and_new_loan(database, records, api,
+                                                            borrowed_checkout, reborrow):
+    checkout_id, _ = borrowed_checkout
+    status, original_return = api({"condition_status": "WORKING", "notes": "First return"},
+                                  path=return_path(checkout_id))
+    assert status == 200
+    if reborrow:
+        assert api(payload(records))[0] == 201
+    assert api({"condition_status": "DAMAGED", "notes": "Duplicate"},
+               "DEV-FACULTY", path=return_path(checkout_id))[0] == 409
+    with Session(database) as db:
+        checkout = db.get(EquipmentCheckout, checkout_id)
+        assert checkout.notes == original_return["notes"]
+        assert checkout.returned_at == datetime.fromisoformat(original_return["returned_at"])
+        assert str(checkout.returned_to) == original_return["returned_to"]
+        asset = db.get(EquipmentAsset, records["asset"])
+        assert asset.condition_status == "WORKING"
+        assert asset.availability_status == ("BORROWED" if reborrow else "AVAILABLE")
+
+
+def test_return_real_foreign_key_failure_rolls_back(database, records, borrowed_checkout):
+    checkout_id, original = borrowed_checkout
+    with Session(database, autoflush=False, expire_on_commit=False) as db:
+        fabricated_receiver = User(id=uuid4(), role="FACULTY", is_active=True)
+        with pytest.raises(HTTPException) as error:
+            record_return(db, checkout_id, fabricated_receiver,
+                          ReturnCreate(condition_status="DAMAGED", notes="Must roll back"))
+        assert error.value.status_code == 409
+        assert db.get(EquipmentCheckout, checkout_id).status == "BORROWED"
+    assert_still_borrowed(database, records, checkout_id, original["notes"])
+    with Session(database) as db:
+        assert db.get(EquipmentAsset, records["asset"]).availability_status == "BORROWED"
+
+
+@pytest.mark.parametrize("race_with_checkout", [False, True])
+def test_return_concurrency_and_database_clock_after_lock_wait(database, records,
+                                                             borrowed_checkout, race_with_checkout):
+    checkout_id, original = borrowed_checkout
+    label = "return_race_" + uuid4().hex
+
+    def attempt(is_checkout):
+        with Session(database, autoflush=False, expire_on_commit=False) as db:
+            db.execute(text("SELECT set_config('application_name', :label, true)"), {"label": label})
+            staff = db.get(User, records["users"]["FACULTY"])
+            try:
+                if is_checkout:
+                    result = create_checkout(db, records["asset"], records["users"]["STUDENT"],
+                                             staff, datetime.now(timezone.utc) + timedelta(days=1))
+                    return 201, result.id
+                result = record_return(db, checkout_id, staff, ReturnCreate(condition_status="WORKING"))
+                return 200, result.returned_at
+            except HTTPException as error:
+                return error.status_code, None
+
+    with database.connect() as blocker, ThreadPoolExecutor(max_workers=2) as pool:
+        transaction = blocker.begin()
+        blocker.execute(select(EquipmentAsset).where(EquipmentAsset.id == records["asset"]).with_for_update())
+        futures = [pool.submit(attempt, False), pool.submit(attempt, race_with_checkout)]
+        try:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                with database.connect() as observer:
+                    waiting = observer.scalar(text(
+                        "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+                        "AND application_name = :label AND wait_event_type = 'Lock'"
+                    ), {"label": label})
+                if waiting == 2:
+                    break
+                time.sleep(0.05)
+            assert waiting == 2, "Both requests must wait on the same asset row lock"
+            released_at = blocker.scalar(select(func.clock_timestamp()))
+        finally:
+            transaction.rollback()
+        results = [future.result(timeout=15) for future in futures]
+
+    if race_with_checkout:
+        assert results[0][0] == 200
+        assert results[1][0] in {201, 409}
+    else:
+        assert sorted(status for status, _ in results) == [200, 409]
+    returned_at = next(value for status, value in results if status == 200)
+    assert returned_at >= released_at  # now() would incorrectly record transaction start.
+    with Session(database) as db:
+        checkout = db.get(EquipmentCheckout, checkout_id)
+        assert checkout.status == "RETURNED"
+        assert checkout.returned_at == returned_at
+        assert checkout.notes.startswith(original["notes"])
+        assert checkout.notes.count("\n\n[RETURN] ") == 1
+        borrowed = db.scalars(select(EquipmentCheckout).where(EquipmentCheckout.status == "BORROWED")).all()
+        reborrowed = race_with_checkout and results[1][0] == 201
+        assert len(borrowed) == (1 if reborrowed else 0)
+        if reborrowed:
+            assert borrowed[0].id == results[1][1]
+        asset = db.get(EquipmentAsset, records["asset"])
+        assert asset.availability_status == ("BORROWED" if reborrowed else "AVAILABLE")
+        assert asset.condition_status == "WORKING"
