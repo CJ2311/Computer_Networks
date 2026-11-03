@@ -3,6 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -119,6 +120,13 @@ class EquipmentAsset(Base):
         nullable=False,
     )
 
+    maintenance_hold: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+        nullable=False,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -137,13 +145,22 @@ class EquipmentAsset(Base):
         ),
         CheckConstraint(
             "availability_status IN "
-            "('AVAILABLE', 'BORROWED', 'RESERVED', 'RETIRED')",
+            "('AVAILABLE', 'BORROWED', 'RESERVED', 'MAINTENANCE', 'RETIRED')",
             name="ck_asset_availability",
         ),
         CheckConstraint(
             "condition_status IN "
             "('WORKING', 'DAMAGED', 'UNDER_REPAIR', 'MISSING')",
             name="ck_asset_condition",
+        ),
+        CheckConstraint(
+            "availability_status != 'AVAILABLE' OR "
+            "(condition_status = 'WORKING' AND NOT maintenance_hold)",
+            name="ck_asset_available_serviceable",
+        ),
+        CheckConstraint(
+            "availability_status != 'MAINTENANCE' OR maintenance_hold",
+            name="ck_asset_maintenance_requires_hold",
         ),
     )
 

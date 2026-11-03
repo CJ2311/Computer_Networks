@@ -1,5 +1,68 @@
 # PostgreSQL checkout integration tests
 
+## Phase 1 maintenance database foundation
+
+Revision `a3c7e91b6d20`, following `ef14e8f62260`, adds maintenance requests,
+append-only events, an asset maintenance_hold flag (default false), and the
+MAINTENANCE availability value. Condition and availability remain separate.
+No legacy availability/condition values are reclassified. If existing AVAILABLE
+assets are non-working, upgrade fails transactionally and requires separately
+approved reconciliation; it does not silently change those assets.
+
+This is database foundation only. No maintenance services, API endpoints,
+assignment policy, or lifecycle commands exist yet. Do not enable operational
+maintenance use until checkout/return integration and authorization are implemented.
+Existing returns still use the temporary RESERVED behavior described below.
+Returns attempting to clear an already-set hold fail closed rather than release
+equipment; the later integration phase must provide the full return workflow.
+
+Maintenance requests carry the original issue, asset, reporter/time, current
+status/assignee, start/repair/verification/service/cancellation fields, recovery
+parent, and version. A composite foreign key requires recovery to reference the
+same asset; a trigger requires a cancelled parent. A partial unique index allows
+only one OPEN, IN_PROGRESS, or AWAITING_VERIFICATION request per asset.
+
+Events carry the actor/time, positive sequence, type/note, and before/after
+status, assignment, condition, availability, and hold snapshots. Repair notes are
+append-only event notes. A deferred current-version foreign key requires each
+request insertion or version increment to have its matching event by commit.
+Original report fields and terminal requests are immutable; events cannot be
+updated/deleted; neither history table can be deleted from or truncated through
+ordinary DML. This protects retained history, not against a privileged owner
+deliberately disabling safeguards. Exact event payload semantics and full lifecycle
+authorization will be implemented in the service phase.
+
+The application must lock asset -> active checkout -> maintenance request before
+future mutations. Database request guards also lock the asset to check its hold;
+direct request UPDATEs that disregard that ordering can deadlock and must roll
+back. No active request may be inserted without a hold, and a hold cannot be
+cleared while an active request remains. These guards do not implement repair or
+verification services and never write checkout records.
+
+Downgrade takes transaction-scoped exclusive locks and refuses to proceed if
+either maintenance table contains any row, or any asset has a maintenance hold
+or MAINTENANCE availability. It never deletes history or reclassifies assets to
+make downgrade succeed. Run both upgrade and downgrade in a PostgreSQL transaction.
+
+New tables/functions revoke PUBLIC access. The migration neither creates roles
+nor grants access to production/development accounts. A deployment administrator
+must separately verify the migration owner is not the runtime login or a role
+the runtime can assume. The runtime needs SELECT/INSERT/UPDATE on
+maintenance_requests, SELECT/INSERT on maintenance_events, and its existing
+appropriate asset/user privileges. It must have no UPDATE/DELETE/TRUNCATE rights
+on events, no DELETE/TRUNCATE rights on requests, and no ownership/DDL privileges.
+Review inherited/default grants too; owner-level fixture tests cannot verify
+production privilege separation. Trigger functions use invoker rights and a
+pg_catalog-only search path; references use the triggering table's quoted schema.
+
+Shared conftest.py fixtures retain the exact dedicated database/login, local
+connection, restricted-role, and development-engine-blocking checks. Each schema
+now applies all four revision functions, including this foundation revision,
+without executing env.py. test_maintenance_foundation.py covers migration round
+trips, legacy preservation, constraints/indexes, audit retention, recovery,
+deferred audit atomicity, rollback, duplicate concurrency, and downgrade refusal.
+Use the secure runner below to execute these tests; never ordinary Alembic commands.
+
 ## Borrowing history and overdue tracking
 
 `GET /checkouts` lists borrowing records. `GET /checkouts/{checkout_id}` retrieves
@@ -173,7 +236,8 @@ Required setup by the database administrator:
    ```
 
 Each integration case creates a unique `checkout_it_<uuid>` schema, applies the
-three unchanged migration revision functions, inserts fictional records, and
+four migration revision functions (three unchanged originals and the maintenance
+foundation revision), inserts fictional records, and
 drops only that generated schema after the test. Committed writes never target
 the application's configured engine. Interrupted runs can leave generated
 schemas in the dedicated test database for administrator cleanup.
