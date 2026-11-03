@@ -1,5 +1,75 @@
 # PostgreSQL checkout integration tests
 
+## Phase 2 maintenance service logic
+
+`backend/app/services/maintenance.py` implements standalone report, assignment,
+start, repair submission, independent PASS/FAIL verification, cancellation, and
+linked INSPECTION recovery operations. It also provides authorized read-only
+request and paginated event views. There are no maintenance routes, frontend
+changes, or integrations with checkout/return services in this phase.
+
+Services take an authenticated User identity from a trusted caller and re-read
+the persisted role/activation; they do not replace authentication. STUDENT and
+inactive accounts have no maintenance access. Active FACULTY, LAB_ASSISTANT, and
+ADMIN can report and read. Only FACULTY/ADMIN assign, verify, and cancel.
+Assignees must be active FACULTY/LAB_ASSISTANT; only that assigned user can start
+or submit repairs. ADMIN cannot perform repairs. Verification is denied to the
+repair-completion actor; absence of an independent verifier leaves the hold in
+place. Staff access is laboratory-wide until lab-specific scopes are introduced.
+
+Writes own the supplied clean, non-nested Session's transaction, commit once, and
+roll back on validation/database/commit failures. Unrelated pending ORM changes
+are rejected before the operation starts, without discarding the caller's work.
+Use a fresh session for each operation. Future checkout/return integration must
+provide an explicitly shared transaction boundary, not nest these committing
+operations inside an existing service.
+
+Every mutation refreshes locked rows in asset -> active checkout -> request order,
+rechecks authorization after lock waits, uses PostgreSQL clock_timestamp(), and
+persists the corresponding immutable event/version atomically. Required version
+arguments are positive incrementable PostgreSQL integers; stale versions return
+409. Deadlock, serialization, and lock-timeout conflicts roll back and return a
+sanitized retryable conflict; there are no automatic retries. Results are frozen
+snapshots captured under the locks before commit, avoiding post-commit lazy reads.
+
+OPEN -> IN_PROGRESS -> AWAITING_VERIFICATION -> COMPLETED is the successful path.
+FAIL returns AWAITING_VERIFICATION to IN_PROGRESS, preserves the previous attempt
+in events, and keeps the hold. Assignment/reassignment is allowed only in OPEN
+or IN_PROGRESS; a same-assignee no-op is rejected. Repair and verification require
+physical custody and no active loan. Cancellation preserves asset state and hold.
+Recovery creates a new OPEN INSPECTION request linked to the same asset's cancelled
+parent and must pass all work/verification stages; it never releases equipment.
+Original descriptions and supplied note formatting are preserved.
+
+DAMAGE and MALFUNCTION use the existing DAMAGED non-working classification;
+INSPECTION preserves the current condition. Repair start sets UNDER_REPAIR;
+submission reports WORKING provisionally but retains the hold. PASS records the
+verifier and service timestamps and clears the hold only after the COMPLETED
+request and audit event have been flushed, satisfying Phase 1's database guards.
+Mutations are staged using parameterless Session.flush(): later-stage objects
+remain unchanged until their turn. Each flush rejects unrelated pending ORM work,
+and a final clean-session check prevents commit from implicitly flushing it.
+On PASS the order is request completion -> audit event -> asset hold release;
+the audit-event FK remains deferred and must still be satisfied at commit.
+Selective Session.flush(objects=...) is not used (deprecated in SQLAlchemy 2.1).
+Service integration tests treat SQLAlchemy deprecation warnings as failures.
+Existing RESERVED availability is always preserved conservatively, including
+ambiguous legacy reservations. Retired/missing assets require separate
+reconciliation; maintenance cannot silently restore them.
+
+Reporting while BORROWED retains the active checkout and availability; this phase
+never creates, closes, or edits loans. Checkout/return integration is still pending:
+the existing working-return path fails closed on a hold, and the old damaged-return
+path can still use RESERVED. Do not treat this service phase as an operationally
+complete maintenance/return module.
+
+test_maintenance_service.py runs the real lifecycle, authorization, reservation/
+loan preservation, audit, rollback, and concurrent report/assignment/verification/
+cancel-start cases. Race tests observe both workers blocked in PostgreSQL before
+releasing the asset lock. Read service tests use a read-only transaction. Use the
+existing secure runner below; missing dedicated credentials leave these tests
+pending and never justify accessing inventory_db.
+
 ## Phase 1 maintenance database foundation
 
 Revision `a3c7e91b6d20`, following `ef14e8f62260`, adds maintenance requests,
@@ -9,9 +79,9 @@ No legacy availability/condition values are reclassified. If existing AVAILABLE
 assets are non-working, upgrade fails transactionally and requires separately
 approved reconciliation; it does not silently change those assets.
 
-This is database foundation only. No maintenance services, API endpoints,
-assignment policy, or lifecycle commands exist yet. Do not enable operational
-maintenance use until checkout/return integration and authorization are implemented.
+Phase 1 is the database foundation; Phase 2 adds the service logic described above.
+No maintenance API endpoints exist. Do not enable operational maintenance use
+until checkout/return integration and API authorization are implemented.
 Existing returns still use the temporary RESERVED behavior described below.
 Returns attempting to clear an already-set hold fail closed rather than release
 equipment; the later integration phase must provide the full return workflow.
@@ -30,7 +100,8 @@ Original report fields and terminal requests are immutable; events cannot be
 updated/deleted; neither history table can be deleted from or truncated through
 ordinary DML. This protects retained history, not against a privileged owner
 deliberately disabling safeguards. Exact event payload semantics and full lifecycle
-authorization will be implemented in the service phase.
+authorization are implemented in the Phase 2 service; database protections remain
+unchanged.
 
 The application must lock asset -> active checkout -> maintenance request before
 future mutations. Database request guards also lock the asset to check its hold;
