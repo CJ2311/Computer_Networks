@@ -1,3 +1,98 @@
+## Phase 3 checkout, return and maintenance integration
+
+No migration or model change is needed. Endpoint paths and roles are preserved:
+ADMIN/FACULTY/LAB_ASSISTANT issue loans; only FACULTY/LAB_ASSISTANT receive returns.
+Services refresh persisted activation and role records, including after lock waits.
+No new maintenance routes or frontend changes are included.
+
+Standalone writes require a fresh, active, Engine-bound Session with no root
+transaction, SAVEPOINT, failed transaction, or pending ORM work. Entry rejection
+never commits or rolls back the caller's transaction, including already-flushed
+ORM writes and direct SQL. Connection-bound Sessions are not supported for writes.
+Authentication continues using get_db; checkout/return POSTs receive a distinct
+Session through get_inventory_write_db. Persisted activation/roles are still checked
+inside the write transaction. Callers pass an actor reference/ID-bearing User,
+not a User loaded by first querying the write Session. Read services may continue
+using read transactions. Do not commit/rollback an unknown transaction to satisfy
+this contract; acquire a separate fresh Session instead.
+The wrapper explicitly begins and captures its root SessionTransaction, commits
+that object only, and rolls it back only when it is still the Session's root.
+A transaction identity token replaces the old boolean. Recursive services,
+premature commits, and replaced/ended roots are rejected. BaseException cleanup
+also covers interruptions. A replacement transaction is never committed or rolled
+back by the wrapper; its caller must close/clean up the Session.
+Never compose standalone committing services. Return planning accepts already
+locked custody records and queries maintenance before any ORM mutation. Persistence
+uses guarded parameterless flushes: returned checkout -> held asset -> maintenance
+request/version -> immutable event -> validated response -> one commit. Failure at
+any stage rolls back the owned transaction. Unrelated pending ORM changes cause
+rejection. Session-local events block unapproved autoflush/commit-time flushing;
+connection-local SQL guards validate the stage's table, one primary-key record,
+and pending object before DML. This catches late before_flush cascades even when
+callbacks run after the initial pending-state check. Relationship changes are
+unsupported in these scalar-only workflow stages. before_commit callbacks cannot
+introduce an implicit flush. Hooks are removed after each operation, without
+changing global Engine/Mapper dispatchers. These guards are for trusted inventory
+code, not a sandbox against arbitrary Python callbacks issuing raw SQL or COMMIT.
+The SQL guard deliberately supports current single-table, single-UUID-id ORM
+writes only; bulk writes and relationship-based persistence require a separately
+reviewed contract.
+Verification retains COMPLETED request -> event -> asset release ordering, with
+the existing deferred current-event foreign key unchanged.
+
+Lock order is asset -> checkout -> maintenance request. Locked records use
+populate_existing to refresh the identity map. Checkout explicitly rejects a hold,
+active maintenance, unavailable or non-working assets, and inconsistent active
+loans. PostgreSQL clock_timestamp() is read after lock acquisition for checkout
+issuance and deadline validation, then checked again before commit. This is the
+last decision point, not a guarantee against clock changes or delay inside COMMIT.
+The return timestamp is one database instant reused for its report/event times.
+Deadlocks, serialization failures and lock timeouts return sanitized retryable
+409 responses after rollback; other DBAPI failures return sanitized 503 responses.
+
+DAMAGED creates DAMAGE; UNDER_REPAIR creates MALFUNCTION, both OPEN without
+starting repair. A WORKING return with an unexplained hold or prior non-working
+condition creates INSPECTION. Existing OPEN requests are reused without changing
+their original description, reporter, report timestamp or assignment, incrementing
+the locked version and appending RETURN_OBSERVED. New requests have a REPORTED
+event with return context. The event note starts with JSON checkout_id/condition context, followed by verbatim
+return notes (avoiding JSON expansion past the audit note length limit). checkout_id is descriptive context,
+not a database-enforced borrowing foreign key. Original borrowing fields remain
+unchanged and original loan notes are retained with an appended return annotation.
+Borrowing notes themselves are not an immutable database audit log.
+
+A hold with cancelled history and no active request requires an explicit optional
+ReturnCreate.recovery_of_request_id. It must name a cancelled request on the same
+held asset that has not already been replaced. Recovery creates linked OPEN
+INSPECTION and must complete the normal independent verification workflow.
+Unknown/ambiguous provenance returns 409; the service never chooses a parent.
+Already-replaced recovery parents require faculty reconciliation of the chain.
+An active loan with IN_PROGRESS/AWAITING_VERIFICATION maintenance returns 409
+without rewriting history. An inconsistent loan with RESERVED is also rejected;
+there is no reservation ownership/provenance field to justify changing it.
+Standalone maintenance continues preserving RESERVED through verification.
+Existing legacy RESERVED records require separately authorized reconciliation.
+
+Frontend consumers must accept MAINTENANCE return availability and the additive
+maintenance_hold/maintenance_request_id response fields. Asset responses expose
+maintenance_hold and the availability enum includes MAINTENANCE. Independent repair
+verification, audit immutability and all database constraints remain unchanged.
+Staff access remains laboratory-wide pending lab-specific authorization.
+
+Ownership tests are in test_inventory_transaction_ownership.py (real SQLAlchemy
+Sessions over a recording DBAPI stub, without an actual database) and
+integration/test_inventory_transaction_ownership_postgres.py (persisted state).
+Existing mock-based policy tests use inventory_session_stub.py; production guards
+are not weakened. PostgreSQL helpers label after_begin rather than starting a
+caller-owned transaction, and deterministic lock races acquire locks inside the
+service-owned root. Stale-cache tests explicitly end their own setup read
+transaction with expire_on_commit=False before invoking a standalone write.
+Phase 3 tests are in test_inventory_workflows.py (unit and integration). Older
+RESERVED return expectations deliberately change to MAINTENANCE. Fabricated users
+are now rejected with 403 before writes; real FK rollback is injected separately.
+Run the secure PostgreSQL runner below for the entire integration regression suite.
+Do not interpret collection-only validation or missing-credential skips as passes.
+
 # PostgreSQL checkout integration tests
 
 ## Phase 2 maintenance service logic
@@ -57,11 +152,9 @@ Existing RESERVED availability is always preserved conservatively, including
 ambiguous legacy reservations. Retired/missing assets require separate
 reconciliation; maintenance cannot silently restore them.
 
-Reporting while BORROWED retains the active checkout and availability; this phase
-never creates, closes, or edits loans. Checkout/return integration is still pending:
-the existing working-return path fails closed on a hold, and the old damaged-return
-path can still use RESERVED. Do not treat this service phase as an operationally
-complete maintenance/return module.
+Reporting while BORROWED retains the active checkout and availability. Standalone
+maintenance lifecycle operations never edit loans. Phase 3 return integration
+uses the transactionless helpers described below within the return transaction.
 
 test_maintenance_service.py runs the real lifecycle, authorization, reservation/
 loan preservation, audit, rollback, and concurrent report/assignment/verification/
@@ -80,11 +173,8 @@ assets are non-working, upgrade fails transactionally and requires separately
 approved reconciliation; it does not silently change those assets.
 
 Phase 1 is the database foundation; Phase 2 adds the service logic described above.
-No maintenance API endpoints exist. Do not enable operational maintenance use
-until checkout/return integration and API authorization are implemented.
-Existing returns still use the temporary RESERVED behavior described below.
-Returns attempting to clear an already-set hold fail closed rather than release
-equipment; the later integration phase must provide the full return workflow.
+No maintenance API endpoints exist. Phase 3 integrates checkout and return services;
+a separately approved API phase is still required for maintenance lifecycle access.
 
 Maintenance requests carry the original issue, asset, reporter/time, current
 status/assignee, start/repair/verification/service/cancellation fields, recovery
@@ -205,7 +295,8 @@ FACULTY and LAB_ASSISTANT users may record returns; students and administrators
 are denied. The receiving user and return timestamp are server-controlled.
 
 A successful return responds with HTTP 200, the existing checkout fields, the
-reported condition, resulting availability, and `is_overdue`. Lateness means
+reported condition, resulting availability, `maintenance_hold`, nullable
+`maintenance_request_id`, and `is_overdue`. Lateness means
 `returned_at > due_at`; equality is on time. PostgreSQL `clock_timestamp()` is
 read after locks are acquired, so the recorded time includes time spent waiting.
 Original borrower, issuer, deadline, checkout ID, and checkout time are retained.
@@ -216,11 +307,12 @@ Both records must still describe an active BORROWED loan before either is change
 Missing loans return 404. Duplicate returns and inconsistent asset/loan states
 return 409. Condition updates and the return are committed in one transaction.
 
-WORKING returns become AVAILABLE. DAMAGED or UNDER_REPAIR returns become RESERVED.
-**RESERVED is only a temporary maintenance hold and must eventually be replaced
-with a dedicated maintenance availability state.** The checkout service rejects
-both this hold and non-working conditions; this workflow never releases a held
-asset automatically.
+WORKING returns without unresolved maintenance become AVAILABLE. DAMAGED or
+UNDER_REPAIR returns set maintenance_hold and MAINTENANCE availability, creating
+or reusing an OPEN maintenance request. WORKING returns with unresolved defects
+stay held pending independent verification. RESERVED is no longer assigned by
+returns; genuine and ambiguous legacy reservations are never automatically
+reclassified. An active loan paired with RESERVED is rejected for reconciliation.
 
 **Notes are only temporary historical storage. Structured condition history is
 required for future maintenance and auditing.** Each return entry captures the
@@ -354,7 +446,7 @@ not consume the test URL. The fixtures intentionally avoid that environment.
 Coverage includes migrated schema comparison; HTTP checkout and persistence for
 all three authorized staff roles; unavailable assets; missing, inactive, and
 wrong-role borrowers; missing/invalid authentication headers; student issuers;
-inactive issuers; rollback after a real foreign-key failure at commit; and two
+inactive issuers; persisted issuer/receiver authorization; injected real foreign-key rollback; and two
 independent sessions contending for the same PostgreSQL asset row lock. The
 concurrency test requires both sessions to appear in `pg_stat_activity` waiting
 on locks, then checks for exactly one success, one conflict, and one persisted

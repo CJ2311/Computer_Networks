@@ -1,23 +1,25 @@
-"""Standalone maintenance transactions. No routes or checkout/return integration.
+"""Maintenance lifecycle and transactionless return integration primitives.
 
-Write operations own the supplied clean Session's transaction. They must not be
-nested inside another business operation; future integration needs an explicit
-shared transaction boundary. Results are snapshots, never expiring ORM objects.
+Public writes own one clean Session transaction. Internal return helpers operate
+on already-locked records and never commit or acquire a second session.
 """
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import wraps
+import json
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
-from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.app.models.checkout import EquipmentCheckout
 from backend.app.models.equipment import EquipmentAsset
 from backend.app.models.maintenance import MaintenanceEvent, MaintenanceRequest
 from backend.app.models.user import User, UserRole
+from backend.app.services.inventory_transactions import (
+    clean_session as _clean_session, flush_stage as _flush_stage, transaction as _transaction,
+    require_owner,
+)
 
 
 STAFF = frozenset({UserRole.FACULTY.value, UserRole.LAB_ASSISTANT.value, UserRole.ADMIN.value})
@@ -79,35 +81,6 @@ class MaintenanceEventPage:
     limit: int
     offset: int
     has_more: bool
-
-
-def _clean_session(db: Session) -> None:
-    if db.new or db.dirty or db.deleted or db.in_nested_transaction():
-        raise HTTPException(status_code=409, detail="Maintenance requires a clean, non-nested session")
-
-
-def _transaction(operation):
-    @wraps(operation)
-    def run(db: Session, *args, **kwargs):
-        _clean_session(db)
-        try:
-            with db.no_autoflush:
-                result = operation(db, *args, **kwargs)
-                _clean_session(db)  # commit() must not implicitly flush unexpected work.
-                db.commit()
-                return result
-        except IntegrityError:
-            db.rollback()
-            raise HTTPException(status_code=409, detail="Maintenance conflicts with current database state") from None
-        except DBAPIError as error:
-            db.rollback()
-            if getattr(error.orig, "sqlstate", None) in {"40001", "40P01", "55P03"}:
-                raise HTTPException(status_code=409, detail="Concurrent maintenance operation; reload and retry") from None
-            raise
-        except Exception:
-            db.rollback()
-            raise
-    return run
 
 
 def _id(value, label: str) -> UUID:
@@ -210,14 +183,6 @@ def _snapshot(request: MaintenanceRequest, asset: EquipmentAsset) -> Maintenance
                              availability_status=asset.availability_status, maintenance_hold=asset.maintenance_hold)
 
 
-def _flush_stage(db: Session, expected) -> None:
-    # A full flush is safe only when this stage owns every pending change.
-    # Reject unexpected work rather than expunging it or flushing it early.
-    if db.deleted or any(obj is not expected for obj in (*db.new, *db.dirty)):
-        raise HTTPException(status_code=409, detail="Unexpected pending ORM changes during maintenance")
-    db.flush()
-
-
 def _apply_changes(instance, changes):
     for name, value in changes.items():
         setattr(instance, name, value)
@@ -259,6 +224,103 @@ def _persist(db, request, asset, actor_id, now, before, event_type, note=None, *
     return _snapshot(request, asset)
 
 
+def _cancelled_hold(db, asset):
+    """A boolean hold has no provenance: never guess a cancelled parent."""
+    return asset.maintenance_hold and db.scalar(select(MaintenanceRequest.id).where(
+        MaintenanceRequest.asset_id == asset.id, MaintenanceRequest.status == "CANCELLED",
+    ).limit(1)) is not None
+
+
+def _recovery_parent(db, asset, request_id):
+    parent = _locked(db, MaintenanceRequest, MaintenanceRequest.id == _id(request_id, "recovery request ID"))
+    if parent is None:
+        raise HTTPException(status_code=404, detail="Cancelled maintenance request not found")
+    if parent.asset_id != asset.id or parent.status != "CANCELLED" or not asset.maintenance_hold:
+        raise HTTPException(status_code=409, detail="Recovery requires the same held asset and a cancelled request")
+    # A parent already replaced by a request must not be reused to bypass that
+    # replacement's cancellation or completed inspection history.
+    if db.scalar(select(MaintenanceRequest.id).where(
+        MaintenanceRequest.recovery_of_request_id == parent.id,
+    ).limit(1)) is not None:
+        raise HTTPException(status_code=409, detail="Recovery parent already replaced; reconcile the maintenance chain")
+    return parent
+
+
+@dataclass(frozen=True)
+class _ReturnMaintenancePlan:
+    request: MaintenanceRequest
+    new: bool
+    expected_version: int
+    before: dict
+    asset_changes: dict
+    note: str
+
+
+def _plan_return_maintenance(db, asset, checkout, actor, condition, notes, recovery_id=None):
+    """Validate under asset -> checkout locks, before making any object dirty.
+
+    The caller owns the transaction and custody validation. Lock the request last;
+    never re-query a dirty checkout with populate_existing during persistence.
+    """
+    require_owner(db)
+    request = _locked(db, MaintenanceRequest, MaintenanceRequest.asset_id == asset.id,
+                      MaintenanceRequest.status.in_(ACTIVE))
+    parent = None
+    if request is not None:
+        if request.status != "OPEN" or not asset.maintenance_hold:
+            raise HTTPException(status_code=409, detail="Borrowed asset has inconsistent maintenance; authorized reconciliation required")
+        if recovery_id is not None:
+            raise HTTPException(status_code=409, detail="Active maintenance already exists; recovery cannot replace it")
+        if not 1 <= request.version < 2**31 - 1:
+            raise HTTPException(status_code=409, detail="Maintenance version cannot be incremented")
+    elif recovery_id is not None:
+        parent = _recovery_parent(db, asset, recovery_id)
+    elif _cancelled_hold(db, asset):
+        raise HTTPException(status_code=409, detail="Cancelled maintenance hold requires explicit recovery_of_request_id")
+
+    needs_maintenance = (request is not None or parent is not None or asset.maintenance_hold
+                         or condition != "WORKING" or asset.condition_status != "WORKING")
+    if not needs_maintenance:
+        return None, None
+    if asset.condition_status == "MISSING":
+        raise HTTPException(status_code=409, detail="Missing asset requires authorized reconciliation")
+    before = _state(request, asset)
+    new = request is None
+    if new:
+        issue_type = ("INSPECTION" if parent is not None or condition == "WORKING" else
+                      "DAMAGE" if condition == "DAMAGED" else "MALFUNCTION")
+        request = MaintenanceRequest(
+            id=uuid4(), asset_id=asset.id, issue_type=issue_type,
+            issue_description=f"Return observation for checkout {checkout.id}: {condition}."
+                              + ("\n" + notes if notes else ""),
+            status="OPEN", reported_by=actor.id, version=1,
+            recovery_of_request_id=parent.id if parent else None,
+        )
+    # JSON context is descriptive, NOT a foreign key to the borrowing record.
+    # Keep the bounded JSON context separate from verbatim notes: JSON escaping
+    # of 1000 control characters could otherwise exceed the event's 5000 limit.
+    note = json.dumps(dict(checkout_id=str(checkout.id), condition_status=condition))
+    if notes:
+        note += "\nReturn notes:\n" + notes
+    return _ReturnMaintenancePlan(
+        request, new, request.version, before,
+        dict(condition_status=condition, maintenance_hold=True,
+             availability_status="RESERVED" if asset.availability_status == "RESERVED" else "MAINTENANCE"), note,
+    ), parent or (request if not new else None)
+
+
+def _persist_return_maintenance(db, plan, asset, actor_id, now):
+    """Checkout has been flushed; asset -> request/version -> event remain atomic."""
+    require_owner(db)
+    if plan.request.version != plan.expected_version:
+        raise HTTPException(status_code=409, detail="Maintenance version conflict; reload the request")
+    if plan.new:
+        plan.request.reported_at = now
+    return _persist(db, plan.request, asset, actor_id, now, plan.before,
+                    "REPORTED" if plan.new else "RETURN_OBSERVED", plan.note,
+                    asset_changes=plan.asset_changes, new=plan.new)
+
+
 def _report(db, asset_id, actor, issue_type, issue_description, recovery_of_request_id=None):
     _authorize(db, actor)
     asset_id = _id(asset_id, "asset ID")
@@ -275,11 +337,9 @@ def _report(db, asset_id, actor, issue_type, issue_description, recovery_of_requ
         raise HTTPException(status_code=409, detail="Asset already has active maintenance")
     parent = None
     if recovery_of_request_id is not None:
-        parent = _locked(db, MaintenanceRequest, MaintenanceRequest.id == recovery_of_request_id)
-        if parent is None:
-            raise HTTPException(status_code=404, detail="Cancelled maintenance request not found")
-        if parent.asset_id != asset.id or parent.status != "CANCELLED" or not asset.maintenance_hold:
-            raise HTTPException(status_code=409, detail="Recovery requires the same held asset and a cancelled request")
+        parent = _recovery_parent(db, asset, recovery_of_request_id)
+    elif _cancelled_hold(db, asset):
+        raise HTTPException(status_code=409, detail="Cancelled maintenance hold requires explicit recovery_of_request_id")
     if asset.availability_status == "RETIRED" or asset.condition_status == "MISSING":
         raise HTTPException(status_code=409, detail="Retired or missing assets require separate reconciliation")
     user = _authorize(db, actor)

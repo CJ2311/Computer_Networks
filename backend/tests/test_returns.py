@@ -1,5 +1,7 @@
+from backend.tests.inventory_session_stub import configure_session
 from datetime import datetime, timedelta, timezone
 import asyncio
+from contextlib import nullcontext
 import json
 from unittest.mock import Mock
 from uuid import uuid4
@@ -12,18 +14,19 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 
 from backend.app.models.checkout import EquipmentCheckout
-from backend.app.database import get_db
+from backend.app.database import get_db, get_inventory_write_db
 from backend.app.models.equipment import EquipmentAsset
+from backend.app.models.maintenance import MaintenanceRequest, MaintenanceEvent
 from backend.app.models.user import User
 from backend.app.routers.checkout import router, return_equipment
-from backend.app.schemas.checkout import ReturnCreate
+from backend.app.schemas.checkout import CheckoutResponse, ReturnCreate
 from backend.app.services.checkout import record_return
 
 
 @pytest.fixture
-def loan():
+def loan(monkeypatch):
     now = datetime(2026, 11, 2, 12, tzinfo=timezone.utc)
-    asset = EquipmentAsset(id=uuid4(), availability_status="BORROWED", condition_status="WORKING")
+    asset = EquipmentAsset(id=uuid4(), availability_status="BORROWED", condition_status="WORKING", maintenance_hold=False)
     checkout = EquipmentCheckout(
         id=uuid4(), asset_id=asset.id, student_id=uuid4(), issued_by=uuid4(),
         checked_out_at=now - timedelta(days=1), due_at=now + timedelta(hours=1),
@@ -31,12 +34,33 @@ def loan():
     )
     staff = User(id=uuid4(), role="FACULTY", is_active=True)
     db = Mock()
-    db.scalar.side_effect = [asset.id, asset, checkout, now]
+    db.new, db.dirty, db.deleted, db.info = set(), set(), set(), {}
+    db.in_nested_transaction.return_value = False
+    configure_session(db, monkeypatch)
+    db.no_autoflush = nullcontext()
+    db.get.side_effect = lambda model, identifier, **kw: staff if identifier == staff.id else None
+    db.events = []
+    def scalar(statement):
+        sql = str(statement)
+        if "clock_timestamp()" in sql:
+            return now
+        entity = statement.column_descriptions[0].get("entity")
+        if entity is User:
+            return staff
+        if entity is EquipmentAsset:
+            return asset
+        if entity is EquipmentCheckout:
+            return asset.id if len(list(statement.selected_columns)) == 1 else checkout
+        if entity is MaintenanceRequest:
+            return None
+        raise AssertionError(sql)
+    db.scalar.side_effect = scalar
+    db.add.side_effect = lambda obj: db.events.append(obj) if isinstance(obj, MaintenanceEvent) else None
     return db, checkout, asset, staff, now
 
 
 @pytest.mark.parametrize("condition, availability", [
-    ("WORKING", "AVAILABLE"), ("DAMAGED", "RESERVED"), ("UNDER_REPAIR", "RESERVED"),
+    ("WORKING", "AVAILABLE"), ("DAMAGED", "MAINTENANCE"), ("UNDER_REPAIR", "MAINTENANCE"),
 ])
 @pytest.mark.parametrize("role", ["FACULTY", "LAB_ASSISTANT"])
 def test_success_preserves_history_and_database_clock(loan, condition, availability, role):
@@ -69,8 +93,10 @@ def test_success_preserves_history_and_database_clock(loan, condition, availabil
         assert statement.get_execution_options()["populate_existing"] is True
     assert "equipment_assets" in str(statements[1])
     assert "equipment_checkouts" in str(statements[2])
-    assert "clock_timestamp()" in str(statements[3])
-    db.flush.assert_called_once()
+    assert sum("clock_timestamp()" in str(stmt) for stmt in statements) == 1
+    assert db.flush.call_count == (2 if condition == "WORKING" else 4)
+    assert response.maintenance_hold is (condition != "WORKING")
+    assert (response.maintenance_request_id is not None) is (condition != "WORKING")
     db.commit.assert_called_once()
     db.rollback.assert_not_called()
 
@@ -80,6 +106,36 @@ def test_overdue_boundary(loan, offset, expected):
     db, checkout, _, staff, now = loan
     checkout.due_at = now + timedelta(seconds=offset)
     assert record_return(db, checkout.id, staff, ReturnCreate(condition_status="WORKING")).is_overdue is expected
+
+
+@pytest.mark.parametrize("offset", [timedelta(hours=5, minutes=30), timedelta(hours=-7)])
+@pytest.mark.parametrize("condition", ["WORKING", "DAMAGED", "UNDER_REPAIR"])
+def test_return_preserves_timestamp_instants_across_database_timezone_offsets(loan, offset, condition):
+    db, checkout, _, staff, _ = loan
+    # Simulate a UTC pre-commit response, then a PostgreSQL timestamptz reload
+    # rendered in another session timezone. No database connection is required.
+    checkout.checked_out_at = checkout.checked_out_at.replace(microsecond=394303)
+    checkout.due_at = checkout.due_at.replace(microsecond=123457)
+    original = CheckoutResponse.model_validate(checkout).model_dump(mode="json")
+    session_zone = timezone(offset)
+    checkout.checked_out_at = checkout.checked_out_at.astimezone(session_zone)
+    checkout.due_at = checkout.due_at.astimezone(session_zone)
+    reloaded = (checkout.checked_out_at, checkout.due_at)
+
+    response = record_return(db, checkout.id, staff, ReturnCreate(condition_status=condition))
+    serialized = response.model_dump(mode="json")
+    for field in ("checked_out_at", "due_at"):
+        assert serialized[field] != original[field]  # Equivalent offsets are permitted.
+        issued_time = datetime.fromisoformat(original[field])
+        returned_time = datetime.fromisoformat(serialized[field])
+        assert issued_time.utcoffset() is not None and returned_time.utcoffset() == offset
+        assert returned_time == issued_time == getattr(checkout, field)
+        assert returned_time.microsecond == issued_time.microsecond
+    assert reloaded == (checkout.checked_out_at, checkout.due_at)
+    for field in ("id", "asset_id", "student_id", "issued_by"):
+        assert serialized[field] == original[field]
+    assert response.returned_at.utcoffset() == timedelta(0)
+    db.commit.assert_called_once()
 
 
 @pytest.mark.parametrize("role, active", [
@@ -204,7 +260,6 @@ def test_route_uses_existing_role_dependency(role, allowed):
 def test_http_endpoint_with_real_auth_dependencies(loan, monkeypatch, role, active, header, data, expected):
     db, checkout, asset, staff, now = loan
     staff.role, staff.is_active = role, active
-    db.scalar.side_effect = [staff, asset.id, asset, checkout, now]
     monkeypatch.setattr("backend.app.auth.dependencies.is_dev_auth_enabled", lambda: True)
     app = FastAPI()
     app.include_router(router)
@@ -213,6 +268,7 @@ def test_http_endpoint_with_real_auth_dependencies(loan, monkeypatch, role, acti
         yield db
 
     app.dependency_overrides[get_db] = sessions
+    app.dependency_overrides[get_inventory_write_db] = sessions
 
     async def request():
         path = f"/checkouts/{checkout.id}/return"

@@ -54,3 +54,8 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
+
+def get_inventory_write_db() -> Generator[Session, None, None]:
+    """Fresh write Session; authentication continues using get_db independently."""
+    with SessionLocal() as db:
+        yield db

@@ -5,7 +5,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from backend.app.auth.dependencies import require_roles
-from backend.app.database import get_db
+from backend.app.database import get_db, get_inventory_write_db
 from backend.app.models.user import User, UserRole
 from backend.app.schemas.checkout import CheckoutCreate, CheckoutResponse, ReturnCreate, ReturnResponse
 from backend.app.services.checkout import create_checkout, record_return
@@ -23,7 +23,7 @@ router = APIRouter(prefix="/checkouts", tags=["Checkouts"])
 )
 def register_checkout(
     checkout_data: CheckoutCreate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_inventory_write_db),
     authorized_user: User = Depends(
         require_roles(
             UserRole.ADMIN,
@@ -43,7 +43,7 @@ def register_checkout(
 def return_equipment(
     checkout_id: UUID,
     return_data: ReturnCreate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_inventory_write_db),
     authorized_user: User = Depends(require_roles(UserRole.FACULTY, UserRole.LAB_ASSISTANT)),
 ):
     return record_return(db, checkout_id, authorized_user, return_data)

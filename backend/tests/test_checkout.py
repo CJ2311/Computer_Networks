@@ -1,3 +1,5 @@
+from backend.tests.inventory_session_stub import configure_session
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
 from uuid import uuid4
@@ -8,6 +10,8 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 
 from backend.app.models.checkout import EquipmentCheckout
+from backend.app.models.equipment import EquipmentAsset
+from backend.app.models.maintenance import MaintenanceRequest
 from backend.app.models.user import User
 from backend.app.routers.checkout import register_checkout
 from backend.app.schemas.checkout import CheckoutCreate, CheckoutResponse
@@ -28,17 +32,30 @@ def test_checkout_rejects_invalid_deadline(deadline, expected_status):
 
 
 @pytest.mark.parametrize("conflict", [False, True])
-def test_checkout_route_transaction_and_response(conflict):
+def test_checkout_route_transaction_and_response(conflict, monkeypatch):
     now = datetime.now(timezone.utc)
     payload = CheckoutCreate(
         asset_id=uuid4(), student_id=uuid4(), due_at=now + timedelta(days=1)
     )
     staff = User(id=uuid4(), role="LAB_ASSISTANT", is_active=True)
     db = Mock()
-    db.scalar.return_value = Mock(
-        availability_status="AVAILABLE", condition_status="WORKING"
-    )
-    db.get.return_value = User(role="STUDENT", is_active=True)
+    asset = EquipmentAsset(id=payload.asset_id, availability_status="AVAILABLE", condition_status="WORKING", maintenance_hold=False)
+    student = User(id=payload.student_id, role="STUDENT", is_active=True)
+    db.new, db.dirty, db.deleted, db.info = set(), set(), set(), {}
+    db.no_autoflush = nullcontext()
+    db.in_nested_transaction.return_value = False
+    configure_session(db, monkeypatch)
+    db.get.side_effect = lambda model, identifier, **kw: staff if identifier == staff.id else student
+    def scalar(statement):
+        if "clock_timestamp()" in str(statement):
+            return now
+        if statement.column_descriptions[0].get("entity") is EquipmentAsset:
+            return asset
+        return None
+    db.scalar.side_effect = scalar
+    def add(checkout):
+        checkout.id = uuid4()
+    db.add.side_effect = add
     if conflict:
         db.commit.side_effect = IntegrityError("checkout", {}, Exception())
         with pytest.raises(HTTPException) as error:
@@ -48,14 +65,8 @@ def test_checkout_route_transaction_and_response(conflict):
         db.refresh.assert_not_called()
         return
 
-    # Emulate database-generated values without writing to the real database.
-    def refresh(checkout):
-        checkout.id = uuid4()
-        checkout.checked_out_at = now
-
-    db.refresh.side_effect = refresh
     checkout = register_checkout(payload, db=db, authorized_user=staff)
-    assert isinstance(checkout, EquipmentCheckout)
+    assert isinstance(checkout, CheckoutResponse)
     response = CheckoutResponse.model_validate(checkout)
     assert response.asset_id == payload.asset_id
     assert response.student_id == payload.student_id
@@ -64,8 +75,9 @@ def test_checkout_route_transaction_and_response(conflict):
     assert response.status == "BORROWED"
     assert response.returned_at is None
     assert response.returned_to is None
-    assert db.scalar.return_value.availability_status == "BORROWED"
-    db.add.assert_called_once_with(checkout)
+    assert asset.availability_status == "BORROWED"
+    db.add.assert_called_once()
+    assert db.flush.call_count == 2
     db.commit.assert_called_once()
     db.rollback.assert_not_called()
 

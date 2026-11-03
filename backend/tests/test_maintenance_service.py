@@ -1,3 +1,4 @@
+from backend.tests.inventory_session_stub import configure_session
 from contextlib import nullcontext
 from dataclasses import FrozenInstanceError, fields
 from datetime import datetime, timedelta, timezone
@@ -18,7 +19,7 @@ from backend.app.services import maintenance as service
 
 
 @pytest.fixture
-def case():
+def case(monkeypatch):
     c = SimpleNamespace(now=datetime(2026, 11, 3, 12, tzinfo=timezone.utc), events=[], checkout=None, flush_states=[])
     c.users = {name: User(id=uuid4(), role=role, is_active=active) for name, role, active in (
         ("faculty", "FACULTY", True), ("assistant", "LAB_ASSISTANT", True),
@@ -31,8 +32,9 @@ def case():
         status="OPEN", reported_by=c.users["faculty"].id, reported_at=c.now - timedelta(days=1), version=1,
     )
     c.db = Mock()
-    c.db.new, c.db.dirty, c.db.deleted = set(), set(), set()
+    c.db.new, c.db.dirty, c.db.deleted, c.db.info = set(), set(), set(), {}
     c.db.in_nested_transaction.return_value = False
+    configure_session(c.db, monkeypatch)
     c.db.no_autoflush = nullcontext()
     c.db.get.side_effect = lambda model, identifier, **kwargs: next((u for u in c.users.values() if u.id == identifier), None)
 
@@ -46,6 +48,10 @@ def case():
         if entity is EquipmentCheckout:
             return c.checkout
         if entity is MaintenanceRequest:
+            if "recovery_of_request_id =" in sql:
+                return None
+            if "status =" in sql and c.request is not None and c.request.status != "CANCELLED":
+                return None
             if c.request is None:
                 return None
             if len(list(statement.selected_columns)) == 1:

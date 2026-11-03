@@ -34,6 +34,7 @@ class ReturnCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     condition_status: ReturnCondition
+    recovery_of_request_id: UUID | None = None
     notes: str | None = Field(default=None, max_length=1000)
 
 
@@ -42,5 +43,7 @@ class ReturnResponse(CheckoutResponse):
     returned_to: UUID
     status: Literal["RETURNED"]
     condition_status: ReturnCondition
-    availability_status: Literal["AVAILABLE", "RESERVED"]
+    availability_status: Literal["AVAILABLE", "RESERVED", "MAINTENANCE"]
+    maintenance_hold: bool
+    maintenance_request_id: UUID | None
     is_overdue: bool

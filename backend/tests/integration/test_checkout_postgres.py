@@ -1,3 +1,4 @@
+from backend.tests.integration.inventory_helpers import database_now, label_transaction
 """Real PostgreSQL tests; never fall back to the application's database."""
 
 import asyncio
@@ -15,7 +16,7 @@ import pytest
 from sqlalchemy import event, func, inspect, select, text
 from sqlalchemy.orm import Session
 
-from backend.app.database import Base, get_db
+from backend.app.database import Base, get_db, get_inventory_write_db
 from backend.app.models.checkout import EquipmentCheckout
 from backend.app.models.equipment import Equipment, EquipmentAsset
 from backend.app.models.user import User
@@ -63,7 +64,12 @@ def api(database, monkeypatch):
                 db.execute(text("SET TRANSACTION READ ONLY"))
             yield db
 
+    def write_sessions():
+        with Session(database, autoflush=False, expire_on_commit=False) as db:
+            yield db
+
     app.dependency_overrides[get_db] = sessions
+    app.dependency_overrides[get_inventory_write_db] = write_sessions
 
     def request(payload=None, dev_user="DEV-ASSISTANT", path="/checkouts", method="POST", query=None):
         async def run():
@@ -176,14 +182,14 @@ def test_inactive_issuer(database, records, api):
     assert_no_checkout(database, records["asset"])
 
 
-def test_database_constraint_failure_rolls_back(database, records):
-    # A missing issuer FK fails at commit, after the asset UPDATE is flushed.
+def test_fabricated_issuer_rejected_without_writes(database, records):
+    # Caller-supplied roles cannot authorize an unpersisted issuer.
     with Session(database, autoflush=False, expire_on_commit=False) as db:
         issuer = User(id=uuid4(), role="ADMIN", is_active=True)
         with pytest.raises(HTTPException) as error:
             create_checkout(db, records["asset"], records["users"]["STUDENT"], issuer,
                             datetime.now(timezone.utc) + timedelta(days=1))
-        assert error.value.status_code == 409
+        assert error.value.status_code == 403
         assert db.scalar(select(func.count()).select_from(EquipmentCheckout)) == 0
     assert_no_checkout(database, records["asset"])
 
@@ -193,8 +199,8 @@ def test_concurrent_checkout_only_one_succeeds(database, records):
 
     def attempt():
         with Session(database, autoflush=False, expire_on_commit=False) as db:
-            db.execute(text("SELECT set_config('application_name', :label, true)"), {"label": label})
-            staff = db.get(User, records["users"]["LAB_ASSISTANT"])
+            label_transaction(db, label)
+            staff = User(id=records["users"]["LAB_ASSISTANT"])
             try:
                 checkout = create_checkout(db, records["asset"], records["users"]["STUDENT"], staff,
                                            datetime.now(timezone.utc) + timedelta(days=1))
@@ -252,7 +258,7 @@ def assert_still_borrowed(database, records, checkout_id, original_notes):
 
 @pytest.mark.parametrize("issuer", ["DEV-FACULTY", "DEV-ASSISTANT"])
 @pytest.mark.parametrize("condition, availability", [
-    ("WORKING", "AVAILABLE"), ("DAMAGED", "RESERVED"), ("UNDER_REPAIR", "RESERVED"),
+    ("WORKING", "AVAILABLE"), ("DAMAGED", "MAINTENANCE"), ("UNDER_REPAIR", "MAINTENANCE"),
 ])
 def test_return_success_history_and_reborrowing(database, records, api, borrowed_checkout,
                                               issuer, condition, availability):
@@ -271,8 +277,17 @@ def test_return_success_history_and_reborrowing(database, records, api, borrowed
         assert datetime.fromisoformat(response["returned_at"]) == checkout.returned_at
         expected_role = "FACULTY" if issuer == "DEV-FACULTY" else "LAB_ASSISTANT"
         assert checkout.returned_to == records["users"][expected_role]
-        for field in ("id", "asset_id", "student_id", "issued_by", "checked_out_at", "due_at"):
+        for field in ("id", "asset_id", "student_id", "issued_by"):
             assert response[field] == original[field]
+        # PostgreSQL renders timestamptz in the session timezone, whereas the
+        # pre-commit checkout snapshot can retain UTC or an input offset. Compare
+        # exact instants (including microseconds), not their ISO string spelling.
+        for field in ("checked_out_at", "due_at"):
+            issued_time = datetime.fromisoformat(original[field])
+            returned_time = datetime.fromisoformat(response[field])
+            stored_time = getattr(checkout, field)
+            assert all(value.utcoffset() is not None for value in (issued_time, returned_time, stored_time))
+            assert returned_time == issued_time == stored_time
         assert checkout.notes.startswith(original["notes"] + "\n\n[RETURN] ")
         annotation = json.loads(checkout.notes.split("\n\n[RETURN] ", 1)[1])
         assert annotation["condition_status"] == condition
@@ -287,6 +302,8 @@ def test_return_success_history_and_reborrowing(database, records, api, borrowed
         # The first checkout remains present after subsequent borrowing attempts.
         first = db.get(EquipmentCheckout, checkout_id)
         assert first.status == "RETURNED"
+        for field in ("checked_out_at", "due_at"):
+            assert getattr(first, field) == datetime.fromisoformat(original[field])
         assert json.loads(first.notes.split("\n\n[RETURN] ", 1)[1])["condition_status"] == condition
         assert db.scalar(select(func.count()).select_from(EquipmentCheckout)) == (2 if next_status == 201 else 1)
 
@@ -626,14 +643,14 @@ def test_history_maximum_page_size(database, api, records, history_records):
     assert status == 200 and len(page["items"]) == 7 and page["has_more"] is False
 
 
-def test_return_real_foreign_key_failure_rolls_back(database, records, borrowed_checkout):
+def test_fabricated_receiver_rejected_without_writes(database, records, borrowed_checkout):
     checkout_id, original = borrowed_checkout
     with Session(database, autoflush=False, expire_on_commit=False) as db:
         fabricated_receiver = User(id=uuid4(), role="FACULTY", is_active=True)
         with pytest.raises(HTTPException) as error:
             record_return(db, checkout_id, fabricated_receiver,
                           ReturnCreate(condition_status="DAMAGED", notes="Must roll back"))
-        assert error.value.status_code == 409
+        assert error.value.status_code == 403
         assert db.get(EquipmentCheckout, checkout_id).status == "BORROWED"
     assert_still_borrowed(database, records, checkout_id, original["notes"])
     with Session(database) as db:
@@ -648,8 +665,8 @@ def test_return_concurrency_and_database_clock_after_lock_wait(database, records
 
     def attempt(is_checkout):
         with Session(database, autoflush=False, expire_on_commit=False) as db:
-            db.execute(text("SELECT set_config('application_name', :label, true)"), {"label": label})
-            staff = db.get(User, records["users"]["FACULTY"])
+            label_transaction(db, label)
+            staff = User(id=records["users"]["FACULTY"])
             try:
                 if is_checkout:
                     result = create_checkout(db, records["asset"], records["users"]["STUDENT"],

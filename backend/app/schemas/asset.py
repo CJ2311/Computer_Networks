@@ -8,6 +8,7 @@ class AvailabilityStatus(str, Enum):
     AVAILABLE = "AVAILABLE"
     BORROWED = "BORROWED"
     RESERVED = "RESERVED"
+    MAINTENANCE = "MAINTENANCE"
     RETIRED = "RETIRED"
 
 
@@ -37,3 +38,4 @@ class AssetResponse(BaseModel):
     location: str
     availability_status: str
     condition_status: str
+    maintenance_hold: bool

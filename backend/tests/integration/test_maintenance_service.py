@@ -1,3 +1,4 @@
+from backend.tests.integration.inventory_helpers import database_now, label_transaction
 """Phase 2 services against the unchanged Phase 1 PostgreSQL foundation."""
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
@@ -46,7 +47,7 @@ def call(database, service_rows):
         with Session(database, autoflush=False, expire_on_commit=False) as db:
             if operation in {service.get_maintenance_request, service.list_maintenance_events}:
                 db.execute(sa.text("SET TRANSACTION READ ONLY"))
-            return operation(db, actor=db.get(User, service_rows["users"][actor]), **kwargs)
+            return operation(db, actor=User(id=service_rows["users"][actor]), **kwargs)
     return invoke
 
 
@@ -249,7 +250,7 @@ def test_service_cancellation_recovery_requires_new_verification(database, call,
 def test_service_real_event_fk_failure_rolls_back_report(database, service_rows, monkeypatch):
     before = snapshot(database)
     with Session(database, autoflush=False) as db:
-        actor = db.get(User, service_rows["users"]["faculty"])
+        actor = User(id=service_rows["users"]["faculty"])
         add = db.add
 
         def corrupt_event(obj):
@@ -266,11 +267,11 @@ def test_service_real_event_fk_failure_rolls_back_report(database, service_rows,
 def test_service_verification_failure_rolls_back_request_event_and_asset(database, service_rows, awaiting, monkeypatch, point):
     before = snapshot(database)
     with Session(database, autoflush=False) as db:
-        actor = db.get(User, service_rows["users"]["faculty"])
+        actor = User(id=service_rows["users"]["faculty"])
         if point == "commit":
             def fail_commit():
                 raise RuntimeError("Injected commit failure")
-            monkeypatch.setattr(db, "commit", fail_commit)
+            sa.event.listen(db, "before_commit", lambda session: fail_commit())
         else:
             flush = db.flush
             count = 0
@@ -316,9 +317,9 @@ def test_service_concurrent_operations_have_one_winner(database, call, service_r
     def attempt(command):
         operation, role, kwargs = command
         with Session(database, autoflush=False) as db:
-            db.execute(sa.text("SELECT set_config('application_name', :label, true)"), {"label": label})
+            label_transaction(db, label)
             try:
-                actor = db.get(User, service_rows["users"][role])
+                actor = User(id=service_rows["users"][role])
                 return 200, operation(db, actor=actor, **kwargs)
             except HTTPException as error:
                 return error.status_code, None
@@ -421,7 +422,7 @@ def test_unrelated_pending_work_is_never_flushed_or_committed(database, service_
     sa.event.listen(database, "before_cursor_execute", record)
     try:
         with Session(database, autoflush=False) as db:
-            actor = db.get(User, service_rows["users"]["faculty"])
+            actor = User(id=service_rows["users"]["faculty"])
             flush = db.flush
             count = 0
 

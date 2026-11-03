@@ -158,16 +158,16 @@ def test_database_guards_cover_retention_versions_recovery_and_hold(recorded_sch
     assert "%I.equipment_assets" in sql and "%I.maintenance_requests" in sql
 
 
-def test_existing_checkout_and_return_api_schemas_are_unchanged():
+def test_checkout_contract_preserved_and_return_contract_adds_maintenance():
     assert set(CheckoutResponse.model_fields) == {
         "id", "asset_id", "student_id", "issued_by", "checked_out_at", "due_at",
         "returned_at", "returned_to", "status", "notes",
     }
     assert set(ReturnResponse.model_fields) == set(CheckoutResponse.model_fields) | {
-        "condition_status", "availability_status", "is_overdue",
+        "condition_status", "availability_status", "is_overdue", "maintenance_hold", "maintenance_request_id",
     }
-    assert "maintenance_hold" not in AssetResponse.model_fields
-    assert "MAINTENANCE" not in str(ReturnResponse.model_fields["availability_status"].annotation)
+    assert "maintenance_hold" in AssetResponse.model_fields
+    assert "MAINTENANCE" in str(ReturnResponse.model_fields["availability_status"].annotation)
 
 
 def test_revision_extends_existing_head():
