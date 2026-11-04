@@ -1,7 +1,7 @@
 from enum import Enum
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class AvailabilityStatus(str, Enum):
@@ -20,11 +20,18 @@ class ConditionStatus(str, Enum):
 
 
 class AssetCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
     equipment_id: UUID
     asset_code: str = Field(min_length=1, max_length=50)
     location: str = Field(min_length=1, max_length=150)
-    nfc_tag_id: str | None = None
-    serial_number: str | None = None
+    nfc_tag_id: str | None = Field(default=None, max_length=100)
+    serial_number: str | None = Field(default=None, max_length=100)
+
+    @field_validator("nfc_tag_id", "serial_number")
+    @classmethod
+    def normalize_optional_identifiers(cls, value: str | None) -> str | None:
+        return None if value == "" else value
 
 
 class AssetResponse(BaseModel):

@@ -151,7 +151,9 @@ def _rollback_owned(db, owner):
         owner.root.rollback()
 
 
-def transaction(operation):
+def transaction(operation=None, *, uncertain_commit_detail: str | None = None):
+    if operation is None:
+        return lambda target: transaction(target, uncertain_commit_detail=uncertain_commit_detail)
     @wraps(operation)
     def run(db: Session, *args, **kwargs):
         clean_session(db)
@@ -179,16 +181,21 @@ def transaction(operation):
                 owner.root.commit()
                 return result
         except BaseException as error:
+            commit_attempted = owner.phase == "committing"
             try:
                 _rollback_owned(db, owner)
             except Exception:
-                raise HTTPException(status_code=503, detail="Inventory transaction cleanup failed") from None
+                detail = (uncertain_commit_detail if commit_attempted and uncertain_commit_detail
+                          else "Inventory transaction cleanup failed")
+                raise HTTPException(status_code=503, detail=detail) from None
             if isinstance(error, IntegrityError):
                 raise _conflict("Inventory operation conflicts with current database state") from None
             if isinstance(error, DBAPIError):
                 if getattr(error.orig, "sqlstate", None) in {"40001", "40P01", "55P03"}:
                     raise _conflict("Concurrent inventory operation; reload and retry") from None
-                raise HTTPException(status_code=503, detail="Inventory database operation failed") from None
+                detail = (uncertain_commit_detail if commit_attempted and uncertain_commit_detail
+                          else "Inventory database operation failed")
+                raise HTTPException(status_code=503, detail=detail) from None
             raise
         finally:
             try:

@@ -3,7 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from uuid import UUID
 
-from backend.app.database import get_db
+from backend.app.database import get_db, get_inventory_write_db
 from backend.app.models.equipment import Equipment
 from backend.app.schemas.equipment import EquipmentResponse
 
@@ -61,7 +61,7 @@ def get_equipment(
 )
 def register_equipment(
     equipment_data: EquipmentCreate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_inventory_write_db),
     _authorized_user=Depends(
         require_roles(
             UserRole.ADMIN,
@@ -70,4 +70,4 @@ def register_equipment(
         )
     ),
 ):
-    return create_equipment(db, equipment_data)
+    return create_equipment(db, equipment_data, actor=_authorized_user)

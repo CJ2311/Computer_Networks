@@ -4,7 +4,7 @@ from sqlalchemy import select
 
 from backend.app.models.equipment import EquipmentAsset
 from backend.app.auth.dependencies import require_roles
-from backend.app.database import get_db
+from backend.app.database import get_db, get_inventory_write_db
 from backend.app.models.user import UserRole
 from backend.app.schemas.asset import AssetCreate, AssetResponse
 from backend.app.services.asset import create_asset
@@ -25,7 +25,7 @@ router = APIRouter(
 )
 def register_asset(
     asset_data: AssetCreate,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_inventory_write_db),
     _authorized_user=Depends(
         require_roles(
             UserRole.ADMIN,
@@ -34,7 +34,7 @@ def register_asset(
         )
     ),
 ):
-    return create_asset(db, asset_data)
+    return create_asset(db, asset_data, actor=_authorized_user)
 
 @router.get(
     "",
