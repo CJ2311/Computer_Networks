@@ -6,6 +6,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class CheckoutCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     asset_id: UUID
     student_id: UUID
     due_at: datetime

@@ -14,7 +14,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from backend.app.models.checkout import EquipmentCheckout
-from backend.app.models.equipment import EquipmentAsset
+from backend.app.models.equipment import Equipment, EquipmentAsset
 from backend.app.models.maintenance import MaintenanceEvent, MaintenanceRequest
 from backend.app.models.user import User
 from backend.app.schemas.checkout import ReturnCreate
@@ -43,6 +43,8 @@ def flow(monkeypatch):
         if "clock_timestamp()" in sql:
             return c.now
         entity = statement.column_descriptions[0].get("entity")
+        if entity is Equipment:
+            return Equipment(id=c.asset.equipment_id, name="Sensor")
         if entity is EquipmentAsset:
             return c.asset
         if entity is EquipmentCheckout:
@@ -371,3 +373,15 @@ def test_checkout_failure_rolls_back_before_response_is_returned(flow, monkeypat
     c.db.rollback.assert_called_once()
     if stage != "commit":
         c.db.commit.assert_not_called()
+
+def test_checkout_locks_parent_after_asset_before_custody_records(flow):
+    from sqlalchemy.dialects import postgresql
+    c = flow
+    c.asset.availability_status = "AVAILABLE"
+    service.create_checkout(c.db, c.asset.id, c.student.id, c.staff, c.loan.due_at)
+    statements = [call.args[0] for call in c.db.scalar.call_args_list if call.args[0]._for_update_arg is not None]
+    assert [stmt.column_descriptions[0]["entity"] for stmt in statements] == [
+        EquipmentAsset, Equipment, EquipmentCheckout, MaintenanceRequest,
+    ]
+    assert "FOR SHARE" in str(statements[1].compile(dialect=postgresql.dialect()))
+    assert all(stmt.get_execution_options()["populate_existing"] for stmt in statements)

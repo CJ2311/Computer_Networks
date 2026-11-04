@@ -33,8 +33,10 @@ def _currently_overdue(as_of: datetime):
 def _history_statement(as_of: datetime):
     return select(
         EquipmentCheckout.id, EquipmentCheckout.asset_id,
-        EquipmentAsset.equipment_id, EquipmentAsset.asset_code,
-        Equipment.name.label("equipment_name"), EquipmentCheckout.student_id,
+        EquipmentAsset.equipment_id,
+        EquipmentCheckout.asset_code_at_checkout.label("asset_code"),
+        EquipmentCheckout.equipment_name_at_checkout.label("equipment_name"),
+        EquipmentCheckout.identifier_snapshot_status, EquipmentCheckout.student_id,
         EquipmentCheckout.issued_by, EquipmentCheckout.checked_out_at,
         EquipmentCheckout.due_at, EquipmentCheckout.returned_at,
         EquipmentCheckout.returned_to, EquipmentCheckout.status,

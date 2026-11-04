@@ -473,3 +473,25 @@ enabled for the test process and only the database dependency redirected.
 The original `test_dev_auth.py` still contains one read-only lookup of the
 development `DEV-ADMIN` account; it is not a checkout integration test. Use the
 integration-only command to run exclusively against the dedicated test database.
+
+## Task 3B-1 checkout identifier snapshots
+
+The isolated revision list now includes b7d2f90c4e61 after a3c7e91b6d20.
+It captures exact names/codes on new checkout INSERTs, rejects supplied labels or
+status, and rejects modifications to snapshot fields (SQLSTATE 55000). Existing
+loans keep all original fields and receive null labels / LEGACY_UNKNOWN.
+History now exposes nullable labels and identifier_snapshot_status. No metadata
+PATCH/audit implementation is included.
+
+test_checkout_snapshots_postgres.py covers exact capture, rename/return/reborrow,
+student/staff history, forged API/direct SQL inputs, immutable updates, legacy
+upgrade preservation, populated downgrade refusal, empty downgrade/upgrade, and
+both orders of concurrent checkout versus label writes. These tests use the
+unchanged identity checks and per-case schema cleanup. The pre-upgrade case
+downgrades only an EMPTY isolated schema, seeds old-format loans, and reapplies
+the new revision directly; it never disables guards or invokes env.py.
+
+Run only through the existing secure PowerShell runner in this README. The full
+suite includes snapshot tests automatically. Credentials were unavailable during
+Task 3B-1 implementation, so PostgreSQL behavior remains unverified until that
+runner passes. Do not run ordinary Alembic commands or point this suite at inventory_db.

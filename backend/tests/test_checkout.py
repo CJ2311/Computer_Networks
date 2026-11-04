@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 
 from backend.app.models.checkout import EquipmentCheckout
-from backend.app.models.equipment import EquipmentAsset
+from backend.app.models.equipment import Equipment, EquipmentAsset
 from backend.app.models.maintenance import MaintenanceRequest
 from backend.app.models.user import User
 from backend.app.routers.checkout import register_checkout
@@ -49,6 +49,8 @@ def test_checkout_route_transaction_and_response(conflict, monkeypatch):
     def scalar(statement):
         if "clock_timestamp()" in str(statement):
             return now
+        if statement.column_descriptions[0].get("entity") is Equipment:
+            return Equipment(id=asset.equipment_id, name="Sensor")
         if statement.column_descriptions[0].get("entity") is EquipmentAsset:
             return asset
         return None

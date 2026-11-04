@@ -40,8 +40,9 @@ class HistoryItem(BaseModel):
     id: UUID
     asset_id: UUID
     equipment_id: UUID
-    asset_code: str
-    equipment_name: str
+    asset_code: str | None
+    equipment_name: str | None
+    identifier_snapshot_status: Literal["CAPTURED", "LEGACY_UNKNOWN"]
     student_id: UUID
     issued_by: UUID
     checked_out_at: datetime

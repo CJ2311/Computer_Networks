@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.models.checkout import EquipmentCheckout
-from backend.app.models.equipment import EquipmentAsset
+from backend.app.models.equipment import Equipment, EquipmentAsset
 from backend.app.models.user import User, UserRole
 from backend.app.models.maintenance import MaintenanceRequest
 from backend.app.services import maintenance
@@ -111,6 +111,13 @@ def create_checkout(
     if notes is not None and (not isinstance(notes, str) or len(notes) > 1000):
         raise HTTPException(status_code=422, detail="Checkout notes must be at most 1000 characters")
     asset = validate_checkout_asset(db, asset_id)
+    # Parent names are non-key values: FOR SHARE, not FOR KEY SHARE.
+    equipment = db.scalar(
+        select(Equipment).where(Equipment.id == asset.equipment_id)
+        .with_for_update(read=True).execution_options(populate_existing=True)
+    )
+    if equipment is None:
+        raise HTTPException(status_code=409, detail="Asset equipment is missing")
     active = maintenance._locked(db, EquipmentCheckout, EquipmentCheckout.asset_id == asset_id,
                                  EquipmentCheckout.status == "BORROWED")
     if active is not None:

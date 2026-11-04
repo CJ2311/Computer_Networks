@@ -5,6 +5,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    FetchedValue,
     Index,
     String,
     Text,
@@ -77,7 +78,24 @@ class EquipmentCheckout(Base):
         nullable=True,
     )
 
+    equipment_name_at_checkout: Mapped[str | None] = mapped_column(
+        String(150), nullable=True, server_default=FetchedValue(),
+    )
+    asset_code_at_checkout: Mapped[str | None] = mapped_column(
+        String(50), nullable=True, server_default=FetchedValue(),
+    )
+    identifier_snapshot_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=FetchedValue(),
+    )
+
     __table_args__ = (
+        CheckConstraint(
+            "(identifier_snapshot_status = 'CAPTURED' AND equipment_name_at_checkout IS NOT NULL "
+            "AND asset_code_at_checkout IS NOT NULL) OR "
+            "(identifier_snapshot_status = 'LEGACY_UNKNOWN' AND equipment_name_at_checkout IS NULL "
+            "AND asset_code_at_checkout IS NULL)",
+            name="ck_checkout_identifier_snapshots",
+        ),
         CheckConstraint(
             "status IN ('BORROWED', 'RETURNED')",
             name="ck_checkout_status",

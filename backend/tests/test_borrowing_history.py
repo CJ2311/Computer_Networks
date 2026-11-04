@@ -23,7 +23,7 @@ def history():
     now = datetime(2026, 11, 2, 12, tzinfo=timezone.utc)
     user = User(id=uuid4(), role="STUDENT", is_active=True)
     row = dict(id=uuid4(), asset_id=uuid4(), equipment_id=uuid4(), asset_code="TEST-01",
-               equipment_name="Sensor", student_id=user.id, issued_by=uuid4(),
+               equipment_name="Sensor", identifier_snapshot_status="CAPTURED", student_id=user.id, issued_by=uuid4(),
                checked_out_at=now - timedelta(days=1), due_at=now + timedelta(days=1),
                returned_at=None, returned_to=None, status="BORROWED",
                is_currently_overdue=False, was_returned_late=False)

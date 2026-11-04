@@ -121,6 +121,7 @@ def test_migrated_schema_matches_model(database):
         assert {c["name"] for c in inspector.get_check_constraints("equipment_checkouts")} == {
             "ck_checkout_status", "ck_checkout_return_consistency",
             "ck_checkout_due_after_issue", "ck_checkout_return_after_issue",
+            "ck_checkout_identifier_snapshots",
         }
 
 
