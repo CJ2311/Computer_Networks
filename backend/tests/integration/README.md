@@ -93,6 +93,23 @@ are now rejected with 403 before writes; real FK rollback is injected separately
 Run the secure PostgreSQL runner below for the entire integration regression suite.
 Do not interpret collection-only validation or missing-credential skips as passes.
 
+### Transaction Session Lifecycle
+
+Inventory write Sessions are single-operation and must not be shared
+concurrently.
+
+Callers must discard the Session after rollback failure or event-listener
+cleanup failure. Reusing such a Session is unsupported.
+
+A listener-cleanup exception may occur after a successful database commit.
+Consequently, an error response does not always guarantee that the
+operation was rolled back. Callers should verify the persisted operation
+state before retrying an uncertain checkout or return.
+
+The current checkout and return HTTP dependencies create and close
+dedicated write Sessions for each request. Standalone maintenance callers
+must follow the same lifecycle requirements.
+
 # PostgreSQL checkout integration tests
 
 ## Phase 2 maintenance service logic
