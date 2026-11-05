@@ -97,9 +97,12 @@ def database(test_database):
         # so invoking `alembic upgrade` here would target the development database.
         revisions = Path(__file__).resolve().parents[2] / "alembic" / "versions"
         with engine.begin() as connection:
-            context = MigrationContext.configure(connection)
+            context = MigrationContext.configure(connection, opts={"metadata_audit_isolated_test": True})
             with Operations.context(context):
-                for prefix in ("f9bc7a594a00", "df453131d3d8", "ef14e8f62260", "a3c7e91b6d20", "b7d2f90c4e61"):
+                for prefix in (
+                    "f9bc7a594a00", "df453131d3d8", "ef14e8f62260",
+                    "a3c7e91b6d20", "b7d2f90c4e61", "c4e8a17d92f6",
+                ):
                     path = next(revisions.glob(prefix + "_*.py"))
                     spec = importlib.util.spec_from_file_location("test_revision_" + prefix, path)
                     revision = importlib.util.module_from_spec(spec)

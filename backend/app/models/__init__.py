@@ -2,6 +2,7 @@ from .equipment import Equipment, EquipmentAsset, EquipmentStock
 from .user import User, UserRole
 from backend.app.models.checkout import EquipmentCheckout
 from .maintenance import MaintenanceEvent, MaintenanceRequest
+from .metadata_audit import MetadataAuditEvent
 
 __all__ = [
     "Equipment",
@@ -12,4 +13,5 @@ __all__ = [
     "EquipmentCheckout",
     "MaintenanceRequest",
     "MaintenanceEvent",
+    "MetadataAuditEvent",
 ]

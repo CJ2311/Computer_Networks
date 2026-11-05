@@ -129,7 +129,7 @@ Commit and HTTP delivery are not atomic.
 
 ## Final audit table and generation design
 
-Future metadata_audit_events / MetadataAuditEvent:
+Task 3B-2 implements metadata_audit_events / MetadataAuditEvent:
 
 | Column | Constraint |
 | --- | --- |
@@ -172,7 +172,7 @@ can impersonate another eligible actor for a real metadata update. This design
 trusts the authenticated server and does not claim protection from that compromise.
 No new login/authentication mechanism or secret is introduced in this task.
 
-Final production roles (proposed provisioning only):
+Production roles (provisioned separately by a deployment administrator):
 
 | Role | Allowed / prohibited |
 | --- | --- |
@@ -184,8 +184,8 @@ Final production roles (proposed provisioning only):
 Generator execution switches current_user to the restricted writer role. The audit
 BEFORE INSERT guard is SECURITY INVOKER: require the catalog-verified generator
 owner identity plus the expected nested trigger context. Do not make this guard
-SECURITY DEFINER, which would erase the caller-identity check. Depth is an extra
-structural check, not authorization. No writable GUC flag can enable insertion.
+SECURITY DEFINER, which would erase the caller-identity check. Depth is a secondary structural check and does not identify the calling
+trigger. Production authorization rests on the verified ACL and role boundary. No writable GUC flag can enable insertion.
 The generators' fixed source-OID checks and revocation of EXECUTE/TRIGGER/DDL stop
 ordinary runtime callers reattaching them to lookalike/temp tables. Direct INSERT
 under an ordinary identity is rejected with 42501; audit UPDATE/DELETE/TRUNCATE
@@ -203,13 +203,10 @@ owner/superuser can alter or disable protections; this is outside the guarantee.
 
 ## Future migration, rollout and verification boundary
 
-No model/migration is created now. The future revision must have parent
-**a3c7e91b6d20** and include BOTH audit foundation and additive checkout snapshots
-with guards. This expands the former audit-only proposal because Option A requires
-checkout storage. Classify preexisting loans LEGACY_UNKNOWN without inventing
-labels; future inserts must capture labels. Do not modify prior revisions or
-other loan values. Downgrade must refuse populated audit or checkout history,
-never drop it with CASCADE. No retrospective metadata-audit backfill.
+Snapshot revision **b7d2f90c4e61** follows **a3c7e91b6d20**. Audit revision
+**c4e8a17d92f6** follows the snapshot revision and adds only audit infrastructure.
+Existing rows are untouched. The audit downgrade refuses populated history under
+exclusive locks. No retrospective metadata-audit backfill.
 
 Do not expose mutable names/codes until snapshot capture, immutable snapshot
 storage and history projection are deployed together. Coordinate/quiesce checkout
@@ -229,12 +226,10 @@ verified test_database and unique-schema machinery, seed loans before the new
 revision, then apply it; never disable guards to fake legacy rows. Its Engine URL
 must match the already verified dedicated URL before connection.
 
-Only tests/helpers and this document change now. Missing update components are
-explicitly pending; future complete components with missing snapshot/audit tables
+The Task 3B-3 PATCH components are explicitly pending; future complete components with missing snapshot/audit tables
 fail setup. Database-free tests include existing immutable ReturnCreate checks;
 future snapshot/history/ACL/concurrency cases remain pending. PostgreSQL tests use
-only the existing safe runner and inventory_checkout_test isolation. No test in
-this refinement runs a database or migration. Existing registration/Phase 3 tests
+only the existing safe runner and inventory_checkout_test isolation. The Task 3A design refinement did not run a database or migration. Existing registration/Phase 3 tests
 are not weakened; a future implementation must deliberately update schema-shape
 expectations for the added snapshot constraint/history provenance field.
 
@@ -261,8 +256,7 @@ was run, and no production application file was modified.
 ## Task 3B-1 implementation boundary
 
 Task 3B-1 splits the earlier combined migration proposal: snapshot-only revision
-b7d2f90c4e61 follows a3c7e91b6d20. Audit foundation/PATCH remain unimplemented and
-must use a later revision. Snapshot capture/immutability, checkout parent locking,
+b7d2f90c4e61 follows a3c7e91b6d20. Task 3B-2 adds audit foundation in a later revision. PATCH remains pending. Snapshot capture/immutability, checkout parent locking,
 and snapshot-only history projection are now implemented in source. No migration
 has been executed by this task. The historical Task 3A verification above remains
 a record of that design-only run, not evidence of current PostgreSQL verification.
@@ -287,3 +281,54 @@ FastAPI import passed with development Engine connection methods blocked.
 Integration collection: **477 cases**, including **16 snapshot-specific cases**;
 all unexecuted because dedicated credentials were unavailable. No migration was
 executed and neither development nor test databases were accessed.
+
+
+## Task 3B-2 deployment and trust boundary
+
+The JSONB diff keys are the changed field names. The generators compare typed
+OLD/NEW values and record the exact stored values, including JSON null and
+NUMERIC(12,2) rendered as a string. Normalizing future PATCH inputs is the
+service's responsibility. A source row lock serializes revision allocation. The
+qualified source relation is resolved to its OID before OLD/NEW data is used,
+which rejects triggers attached to lookalike tables while allowing dump/restore
+to assign new OIDs.
+
+Apply this online revision in one transaction through the approved deployment
+path with an administrator authorized to transfer object ownership. The revision
+requires preprovisioned, separate NOLOGIN owner/writer roles and the existing
+inventory_app login. These three roles must have no memberships or elevated
+attributes. The runtime cannot own the database or the source tables, create in
+the application schema, attach triggers to the sources, or modify the trusted
+users table. The writer cannot own the database or create in the application
+schema. The deployment administrator must maintain these restrictions, keep
+staff identity provisioning separate, and review ambient grants, role changes,
+and executable privileged functions. The current Alembic environment targets
+the development database and is not an approved deployment path for this task.
+
+Only the two generators execute as the audit writer. The migration grants the
+writer eligibility-column reads on users, INSERT on audit history, and the
+three audit-column reads needed to allocate revisions. The runtime receives
+audit SELECT. Audit privileges granted through PUBLIC are revoked, and unsafe
+effective runtime or writer grants on audit history abort the migration. The
+migration grants schema USAGE to the two NOLOGIN roles. The empty downgrade
+leaves the source/schema grants in place for administrator review.
+
+The verified integration fixture opts into a single-owner layout only for the
+dedicated database, test login, and generated schema. That layout tests guards
+and PUBLIC revocations but cannot prove production privilege separation. The
+custom GUC is still a server assertion. A SQL client with the shared runtime
+credential can set another eligible staff UUID and perform a real metadata edit.
+PostgreSQL validates the persisted role and active flag visible to the trigger.
+Privileged administrators and object owners remain trusted. No PATCH endpoint
+or production actor-setting code is introduced in this phase.
+
+
+Production preflight also rejects incoming memberships into either dedicated
+audit role, including INHERIT-only grants. Apply with a deployment superuser
+because transferring ownership must not require a standing membership or schema
+CREATE grant for the writer. After transfer, the migration verifies explicit
+table, column, and function ACLs and effective runtime/writer permissions. No
+third party may attach audit triggers or execute the audit functions. The writer
+must own no other SECURITY DEFINER routines in the database. These checks run
+at migration time. Subsequent ownership, grant, role, and trigger changes remain
+the responsibility of trusted administrators.

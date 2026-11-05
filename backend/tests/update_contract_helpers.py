@@ -25,7 +25,7 @@ CONTRACTS = {
 }
 AUDIT_MODULE = "backend.app.models.metadata_audit"
 AUDIT_MODEL = "MetadataAuditEvent"
-AUDIT_PARENT_REVISION = "a3c7e91b6d20"
+AUDIT_PARENT_REVISION = "b7d2f90c4e61"
 CHECKOUT_SNAPSHOT_FIELDS = ("equipment_name_at_checkout", "asset_code_at_checkout", "identifier_snapshot_status")
 AUDIT_ACTOR_SETTING = "inventory.metadata_actor_id"
 AUDIT_WRITER_ROLE = "inventory_metadata_audit_writer"

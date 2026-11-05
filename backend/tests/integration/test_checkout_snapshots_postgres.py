@@ -19,7 +19,7 @@ from backend.app.schemas.checkout import ReturnCreate
 from backend.app.services.checkout import create_checkout, record_return
 from backend.app.services.borrowing_history import get_borrowing_history, list_borrowing_history
 from backend.tests.integration.test_checkout_postgres import records, api, payload
-from backend.tests.integration.inventory_helpers import database_now
+from backend.tests.integration.inventory_helpers import database_now, set_metadata_actor
 
 FIELDS = ("equipment_name_at_checkout", "asset_code_at_checkout", "identifier_snapshot_status")
 
@@ -43,12 +43,14 @@ def borrow(database, records):
 def test_exact_snapshots_survive_rename_return_and_reborrowing(database, records):
     with Session(database) as db:
         asset = db.get(EquipmentAsset, records["asset"])
+        set_metadata_actor(db, records["users"]["FACULTY"])
         asset.asset_code = "  Exact-Code  "
         db.get(Equipment, asset.equipment_id).name = "  Sensor CASE  "
         db.commit()
     first = borrow(database, records)
     with Session(database) as db:
         asset = db.get(EquipmentAsset, records["asset"])
+        set_metadata_actor(db, records["users"]["FACULTY"])
         asset.asset_code = "NEW-CODE"
         db.get(Equipment, asset.equipment_id).name = "New name"
         db.commit()
@@ -158,6 +160,7 @@ def test_checkout_waits_for_label_writer_and_captures_committed_value(database, 
         model = Equipment if kind == "equipment" else EquipmentAsset
         identifier = equipment_id if kind == "equipment" else records["asset"]
         field = "name" if kind == "equipment" else "asset_code"
+        set_metadata_actor(blocker, records["users"]["FACULTY"])
         blocker.execute(sa.update(model).where(model.id == identifier).values(**{field: "Committed label"}))
         def checkout():
             with Session(database) as db:
@@ -212,6 +215,7 @@ def test_label_writer_waits_until_checkout_commits(database, records, kind):
     def writer():
         with Session(database) as db:
             label_transaction(db, label)
+            set_metadata_actor(db, records["users"]["FACULTY"])
             db.execute(sa.update(model).where(model.id == identifier).values(**{field: "Later label"}))
             db.commit()
     with ThreadPoolExecutor(max_workers=2) as pool:
