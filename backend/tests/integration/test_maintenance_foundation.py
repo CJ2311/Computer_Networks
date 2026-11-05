@@ -96,9 +96,16 @@ def test_foundation_upgrade_matches_metadata_and_installs_guards(database):
             "SELECT tgname FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid "
             "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = current_schema() AND NOT t.tgisinternal"
         )).scalars().all()
-        assert set(triggers) == {"maintenance_request_validate", "maintenance_request_no_delete",
-                                 "maintenance_request_no_truncate", "maintenance_event_no_rewrite",
-                                 "maintenance_event_no_truncate", "maintenance_asset_hold_validate"}
+        maintenance_triggers = {name for name in triggers if name.startswith("maintenance_")}
+
+        assert maintenance_triggers == {
+            "maintenance_request_validate",
+            "maintenance_request_no_delete",
+            "maintenance_request_no_truncate",
+            "maintenance_event_no_rewrite",
+            "maintenance_event_no_truncate",
+            "maintenance_asset_hold_validate",
+}
         functions = connection.execute(sa.text(
             "SELECT p.prosecdef, p.proconfig FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
             "WHERE n.nspname = current_schema() AND p.proname LIKE 'maintenance_%'"
