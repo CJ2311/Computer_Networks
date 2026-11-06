@@ -1,4 +1,5 @@
 """Update request contract. Missing future schemas/services are explicitly pending."""
+import importlib
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
@@ -9,15 +10,17 @@ import pytest
 from sqlalchemy import event, insert
 from sqlalchemy.orm import Session
 
+from backend.app.auth.dependencies import get_current_user
 from backend.app.database import engine
 from backend.app.models.user import User
 from backend.app.models.checkout import EquipmentCheckout
 from backend.app.schemas.checkout import CheckoutCreate, ReturnCreate
 from backend.app.schemas.borrowing_history import HistoryItem
 from backend.app.services.borrowing_history import _history_statement
+from backend.tests.registration_helpers import registration_app
 from backend.tests.test_inventory_transaction_ownership import recording_engine, Parent
 from backend.tests.update_contract_helpers import (
-    CONTRACTS, schema_for, runtime_for, CHECKOUT_SNAPSHOT_FIELDS, checkout_snapshots_ready,
+    CONTRACTS, schema_for, runtime_for, patch_json, CHECKOUT_SNAPSHOT_FIELDS, checkout_snapshots_ready,
 )
 
 
@@ -237,3 +240,52 @@ def test_legacy_unknown_history_is_explicit_and_never_invented_from_current_labe
     result = HistoryItem.model_validate(data).model_dump(mode="json")
     assert result["equipment_name"] is None and result["asset_code"] is None
     assert result["identifier_snapshot_status"] == "LEGACY_UNKNOWN"
+
+
+def test_patch_rejects_nul_and_nonnullable_null_before_persistence(contract, monkeypatch):
+    kind, spec = contract
+    app = registration_app(lambda: None, lambda: None)
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=uuid4(), role="FACULTY", is_active=True,
+    )
+
+    def unexpected_write(*args, **kwargs):
+        pytest.fail("Invalid PATCH reached the persistence service")
+
+    router_module = importlib.import_module(f"backend.app.routers.{kind}")
+    monkeypatch.setattr(router_module, spec["service"], unexpected_write)
+    path = f"{spec['path']}/{uuid4()}"
+    invalid = [(field, "a\x00b") for field in sorted(spec["editable"] - {"purchase_price"})]
+    invalid += [(field, None) for field in sorted(spec["required"])]
+    for field, value in invalid:
+        status, body = patch_json(app, path, {field: value})
+        assert status == 422, field
+        assert any(error["loc"] == ["body", field] for error in body["detail"]), field
+
+
+def test_patch_preserves_valid_unicode_in_text_fields(contract, update_schema):
+    _, spec = contract
+    text = "प्रयोगशाला 測試 café"
+    for field in sorted(spec["editable"] - {"purchase_price"}):
+        payload = update_schema.model_validate({field: f"  {text}  "})
+        assert payload.model_dump(exclude_unset=True) == {field: text}
+
+
+def test_patch_openapi_distinguishes_omission_and_explicit_null(contract):
+    kind, spec = contract
+    document = registration_app(lambda: None, lambda: None).openapi()
+    operation = document["paths"][f"{spec['path']}/{{{kind}_id}}"]["patch"]
+    reference = operation["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+    schema = document["components"]["schemas"][reference.rsplit("/", 1)[1]]
+
+    assert not schema.get("required")
+    assert set(schema["properties"]) == spec["editable"]
+    for name, property_schema in schema["properties"].items():
+        accepts_null = any(
+            option.get("type") == "null"
+            for option in property_schema.get("anyOf", [property_schema])
+        )
+        assert accepts_null == (name in spec["nullable"]), name
+        if name in spec["required"]:
+            assert property_schema.get("type") == "string"
+            assert "default" not in property_schema

@@ -1,8 +1,4 @@
-"""Pending metadata-update integration contract on the existing isolated harness.
-
-The module gate runs before database fixtures, so absent features do not create
-schemas or contact PostgreSQL. Tests activate when the proposed components exist.
-"""
+"""Metadata update contract on the isolated PostgreSQL harness."""
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from decimal import Decimal
@@ -24,20 +20,17 @@ from backend.app.schemas.checkout import ReturnCreate
 from backend.app.schemas.borrowing_history import HistoryFilters
 from backend.app.services.borrowing_history import get_borrowing_history, list_borrowing_history
 from backend.tests.integration.test_checkout_postgres import records
+from backend.tests.integration.test_checkout_snapshots_postgres import revision as snapshot_revision
+from backend.tests.integration.test_metadata_audit_postgres import create_lookalike_schema
 from backend.tests.integration.inventory_helpers import database_now, label_transaction
 from backend.tests.registration_helpers import registration_app
 from backend.tests.update_contract_helpers import (
-    CONTRACTS, missing_update_components, runtime_for, patch_json, CHECKOUT_SNAPSHOT_FIELDS,
+    CONTRACTS, runtime_for, patch_json, CHECKOUT_SNAPSHOT_FIELDS,
     AUDIT_ACTOR_SETTING, AUDIT_WRITER_ROLE, AUDIT_OWNER_ROLE, AUDIT_GENERATORS,
 )
 
 
-MISSING = missing_update_components()
-pytestmark = [
-    pytest.mark.skipif(bool(MISSING), reason="Pending Task 3B metadata updates/audit: " + ", ".join(MISSING)),
-    pytest.mark.filterwarnings("error::sqlalchemy.exc.SADeprecationWarning"),
-]
-
+pytestmark = pytest.mark.filterwarnings("error::sqlalchemy.exc.SADeprecationWarning")
 
 @pytest.fixture(params=["equipment", "asset"])
 def target(request, database, records):
@@ -112,8 +105,7 @@ def api(database, monkeypatch, target):
             yield db
     app = registration_app(reads, writes)
     path = target["contract"]["path"] + "/{equipment_id}" if target["kind"] == "equipment" else "/assets/{asset_id}"
-    if "patch" not in app.openapi().get("paths", {}).get(path, {}):
-        pytest.skip("Pending Task 3B: PATCH endpoint not implemented")
+    assert "patch" in app.openapi().get("paths", {}).get(path, {})
     return lambda payload, header="DEV-FACULTY", identifier=None: patch_json(
         app, f"{target['contract']['path']}/{identifier or target['id']}", payload, header)
 
@@ -807,13 +799,23 @@ def test_runtime_acl_separation_is_enforced_in_addition_to_owner_trigger_tests(r
                                      {"runtime": runtime, "schema": schema})
 
 
-def test_legacy_unknown_history_never_falls_back_to_current_labels(request, test_database):
-    # Must be seeded BEFORE the approved snapshot migration in a dedicated schema.
-    # Do not disable guards or rewrite a captured snapshot to manufacture legacy data.
-    try:
-        legacy = request.getfixturevalue("checkout_before_snapshot_migration")
-    except pytest.FixtureLookupError:
-        pytest.skip("Pending verified pre-upgrade legacy-checkout fixture")
+@pytest.fixture
+def checkout_before_snapshot_migration(database, records):
+    loan_id = uuid4()
+    with database.begin() as connection:
+        snapshot_revision(connection, "downgrade")
+        original = dict(connection.execute(sa.text(
+            "INSERT INTO equipment_checkouts (id, asset_id, student_id, issued_by, checked_out_at, due_at) "
+            "VALUES (:id, :asset, :student, :staff, clock_timestamp(), clock_timestamp() + interval '1 day') "
+            "RETURNING *"
+        ), {"id": loan_id, "asset": records["asset"], "student": records["users"]["STUDENT"],
+            "staff": records["users"]["FACULTY"]}).mappings().one())
+        snapshot_revision(connection, "upgrade")
+    return {"engine": database, "records": records, "loan_id": loan_id, "original_loan": original}
+
+
+def test_legacy_unknown_history_never_falls_back_to_current_labels(test_database, checkout_before_snapshot_migration):
+    legacy = checkout_before_snapshot_migration
     database, records, loan_id = legacy["engine"], legacy["records"], legacy["loan_id"]
     if database.url != test_database.url:
         pytest.fail("Legacy engine must use the already identity-verified dedicated database/login", pytrace=False)
@@ -831,15 +833,16 @@ def test_legacy_unknown_history_never_falls_back_to_current_labels(request, test
         assert result.identifier_snapshot_status == "LEGACY_UNKNOWN"
 
 
-def test_temp_users_cannot_supply_a_fake_eligible_actor(database, records, target):
+def test_lookalike_users_cannot_supply_a_fake_eligible_actor(database, records, target):
     before = snapshot(database, target)
     with database.connect() as connection:
         root = connection.begin()
-        # A fully qualified, trusted users relation must be used, regardless of
-        # caller temp objects or search_path. This fake actor is absent in reality.
-        connection.execute(sa.text("CREATE TEMP TABLE users (id uuid, role text, is_active boolean) ON COMMIT DROP"))
+        source, lookalike = create_lookalike_schema(connection)
+        connection.execute(sa.text(f"CREATE TABLE {lookalike}.users (id uuid, role text, is_active boolean)"))
         fake_actor = uuid4()
-        connection.execute(sa.text("INSERT INTO pg_temp.users VALUES (:id, 'ADMIN', true)"), {"id": fake_actor})
+        connection.execute(sa.text(f"INSERT INTO {lookalike}.users VALUES (:id, 'ADMIN', true)"), {"id": fake_actor})
+        connection.execute(sa.select(sa.func.set_config("search_path", f"{lookalike}, {source}", True)))
+        assert connection.scalar(sa.text("SELECT id FROM users")) == fake_actor
         connection.execute(sa.select(sa.func.set_config(AUDIT_ACTOR_SETTING, str(fake_actor), True)))
         with pytest.raises(sa.exc.DBAPIError) as error:
             connection.execute(sa.update(target["contract"]["model"]).where(target["contract"]["model"].id == target["id"])
@@ -856,15 +859,15 @@ def test_generator_rejects_lookalike_relation_even_when_privileged_owner_attache
     with database.connect() as connection:
         root = connection.begin()
         quote = connection.dialect.identifier_preparer.quote
-        schema = connection.scalar(sa.text("SELECT current_schema()"))
-        source = quote(schema) + "." + quote(table)
-        fake = "pg_temp." + quote(table)
-        connection.execute(sa.text(f"CREATE TEMP TABLE {quote(table)} (LIKE {source} INCLUDING ALL) ON COMMIT DROP"))
+        schema, lookalike = create_lookalike_schema(connection)
+        source = schema + "." + quote(table)
+        fake = lookalike + "." + quote(table)
+        connection.execute(sa.text(f"CREATE TABLE {fake} (LIKE {source} INCLUDING ALL)"))
         connection.execute(sa.text(f"INSERT INTO {fake} SELECT * FROM {source}"))
         # The ordinary runtime must lack EXECUTE/TRIGGER privileges. The schema
         # owner can attach it, so this additionally exercises the TG_RELID check.
         connection.execute(sa.text(f"CREATE TRIGGER impostor_audit AFTER UPDATE ON {fake} FOR EACH ROW "
-                                   f"EXECUTE FUNCTION {quote(schema)}.{quote(function)}()"))
+                                   f"EXECUTE FUNCTION {schema}.{quote(function)}()"))
         connection.execute(sa.select(sa.func.set_config(AUDIT_ACTOR_SETTING, str(records["users"]["FACULTY"]), True)))
         with pytest.raises(sa.exc.DBAPIError) as error:
             connection.execute(sa.text(f"UPDATE {fake} SET {quote(field_for(target))} = :value WHERE id = :id"),

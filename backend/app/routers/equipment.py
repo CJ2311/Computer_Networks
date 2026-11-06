@@ -11,8 +11,8 @@ from fastapi import status
 
 from backend.app.auth.dependencies import require_roles
 from backend.app.models.user import UserRole
-from backend.app.schemas.equipment import EquipmentCreate
-from backend.app.services.equipment import create_equipment
+from backend.app.schemas.equipment import EquipmentCreate, EquipmentUpdate
+from backend.app.services.equipment import create_equipment, update_equipment
 
 
 router = APIRouter(
@@ -71,3 +71,12 @@ def register_equipment(
     ),
 ):
     return create_equipment(db, equipment_data, actor=_authorized_user)
+
+@router.patch("/{equipment_id}", response_model=EquipmentResponse)
+def patch_equipment(
+    equipment_id: UUID,
+    update_data: EquipmentUpdate,
+    db: Session = Depends(get_inventory_write_db),
+    actor=Depends(require_roles(UserRole.ADMIN, UserRole.FACULTY, UserRole.LAB_ASSISTANT)),
+):
+    return update_equipment(db, equipment_id, update_data, actor)

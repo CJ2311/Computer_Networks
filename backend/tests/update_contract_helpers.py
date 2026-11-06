@@ -1,7 +1,6 @@
-"""Future update contracts and explicit readiness gates; no application stand-ins."""
+"""Shared metadata update contract and test helpers."""
 import asyncio
 import importlib
-import importlib.util
 import json
 
 import pytest
@@ -42,34 +41,14 @@ def checkout_snapshots_ready():
 
 def schema_for(kind):
     module = importlib.import_module(f"backend.app.schemas.{kind}")
-    schema = getattr(module, CONTRACTS[kind]["schema"], None)
-    if schema is None:
-        pytest.skip(f"Pending Task 3B: {CONTRACTS[kind]['schema']} is not implemented")
-    return schema
-
-
-def missing_update_components():
-    missing = []
-    for kind, contract in CONTRACTS.items():
-        if not hasattr(importlib.import_module(f"backend.app.schemas.{kind}"), contract["schema"]):
-            missing.append(contract["schema"])
-        if not hasattr(importlib.import_module(f"backend.app.services.{kind}"), contract["service"]):
-            missing.append(contract["service"])
-    if importlib.util.find_spec(AUDIT_MODULE) is None:
-        missing.append(AUDIT_MODEL)
-    return missing
+    return getattr(module, CONTRACTS[kind]["schema"])
 
 
 def runtime_for(kind):
     schema = schema_for(kind)
     module = importlib.import_module(f"backend.app.services.{kind}")
-    operation = getattr(module, CONTRACTS[kind]["service"], None)
-    if operation is None:
-        pytest.skip(f"Pending Task 3B: {CONTRACTS[kind]['service']} is not implemented")
-    if importlib.util.find_spec(AUDIT_MODULE) is None:
-        pytest.fail("Update service exists without the required metadata audit model/migration")
-    audit = getattr(importlib.import_module(AUDIT_MODULE), AUDIT_MODEL, None)
-    assert audit is not None, "Required MetadataAuditEvent model is missing"
+    operation = getattr(module, CONTRACTS[kind]["service"])
+    audit = getattr(importlib.import_module(AUDIT_MODULE), AUDIT_MODEL)
     return schema, operation, audit
 
 

@@ -6,8 +6,8 @@ from backend.app.models.equipment import EquipmentAsset
 from backend.app.auth.dependencies import require_roles
 from backend.app.database import get_db, get_inventory_write_db
 from backend.app.models.user import UserRole
-from backend.app.schemas.asset import AssetCreate, AssetResponse
-from backend.app.services.asset import create_asset
+from backend.app.schemas.asset import AssetCreate, AssetResponse, AssetUpdate
+from backend.app.services.asset import create_asset, update_asset
 
 from uuid import UUID
 from fastapi import HTTPException
@@ -80,3 +80,12 @@ def get_asset(
         )
 
     return asset
+
+@router.patch("/{asset_id}", response_model=AssetResponse)
+def patch_asset(
+    asset_id: UUID,
+    update_data: AssetUpdate,
+    db: Session = Depends(get_inventory_write_db),
+    actor=Depends(require_roles(UserRole.ADMIN, UserRole.FACULTY, UserRole.LAB_ASSISTANT)),
+):
+    return update_asset(db, asset_id, update_data, actor)
