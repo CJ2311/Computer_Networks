@@ -1,8 +1,11 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
+from backend.app.cors import get_allowed_origins
 from backend.app.routers.equipment import router as equipment_router
 from backend.app.routers.asset import router as asset_router
 from backend.app.routers.checkout import router as checkout_router
+
 
 app = FastAPI(
     title="IoT Laboratory Inventory Management System",
@@ -10,6 +13,13 @@ app = FastAPI(
     version="0.1.0",
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=get_allowed_origins(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PATCH"],
+    allow_headers=["Authorization", "Content-Type"],
+)
 
 @app.get("/")
 def root():
