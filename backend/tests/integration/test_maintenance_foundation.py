@@ -11,11 +11,15 @@ from alembic.operations import Operations
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.orm import Session
 
 from backend.app.database import Base
 from backend.app.models.equipment import Equipment, EquipmentAsset
 from backend.app.models.maintenance import MaintenanceEvent, MaintenanceRequest
 from backend.app.models.user import User
+from backend.app.models.inventory_audit import InventoryAudit, InventoryAuditExpectedAsset
+from backend.app.schemas.inventory_audit import InventoryAuditCreate
+from backend.app.services.inventory_audit import create_inventory_audit
 
 
 REQUESTS = MaintenanceRequest.__table__
@@ -32,8 +36,16 @@ def revision():
 
 
 def migrate(connection, direction):
-    with Operations.context(MigrationContext.configure(connection)):
+    # Inventory snapshots now retain maintenance FKs. Unwind/reapply the empty
+    # dependent foundation when exercising this older revision in isolation.
+    import importlib
+    inventory = importlib.import_module("backend.alembic.versions.d6f2b8a931c0_inventory_audits")
+    with Operations.context(MigrationContext.configure(connection, opts={"metadata_audit_isolated_test": True})):
+        if direction == "downgrade":
+            inventory.downgrade()
         getattr(revision(), direction)()
+        if direction == "upgrade":
+            inventory.upgrade()
 
 
 @pytest.fixture
@@ -207,18 +219,58 @@ def test_history_cannot_be_rewritten_or_removed(database, foundation_rows, state
             connection.execute(sa.select(REQUESTS).order_by(REQUESTS.c.id)).all(),
             connection.execute(sa.select(EVENTS).order_by(EVENTS.c.id)).all(),
         )
+        # Audit snapshots now reference maintenance requests. Include the
+        # explicit dependent-table closure to reach the maintenance trigger,
+        # without CASCADE or disabling any constraints/triggers.
+        guarded_statement = statement
+        if statement.startswith("TRUNCATE"):
+            guarded_statement += (
+                ", inventory_audit_expected_assets, inventory_audit_scans, inventory_audit_discrepancies"
+            )
         # Pending deferred FK events may block TRUNCATE before our guard runs.
         codes = ("55000", "55006") if statement.startswith("TRUNCATE") else "55000"
-        assert_error(connection, lambda: connection.execute(sa.text(statement)), codes)
+        assert_error(connection, lambda: connection.execute(sa.text(guarded_statement)), codes)
         if statement.startswith("TRUNCATE"):
             # Also prove the explicit no-truncate trigger protects the tables
             # when the transaction no longer has pending deferred FK events.
             connection.execute(sa.text("SET CONSTRAINTS ALL IMMEDIATE"))
-            assert_error(connection, lambda: connection.execute(sa.text(statement)), "55000")
+            assert_error(connection, lambda: connection.execute(sa.text(statement)), "0A000")
+            assert_error(connection, lambda: connection.execute(sa.text(guarded_statement)), "55000")
         assert before == (
             connection.execute(sa.select(REQUESTS).order_by(REQUESTS.c.id)).all(),
             connection.execute(sa.select(EVENTS).order_by(EVENTS.c.id)).all(),
         )
+
+
+def test_truncate_dependency_and_maintenance_guard_preserve_audit_snapshots(database, foundation_rows):
+    with database.begin() as connection:
+        request_id = report(connection, foundation_rows)
+    with Session(database) as db:
+        audit = create_inventory_audit(
+            db, InventoryAuditCreate(name="Maintenance snapshot", location="Test lab"),
+            User(id=foundation_rows["staff"][0]),
+        )
+    with database.begin() as connection:
+        expected = connection.execute(sa.select(InventoryAuditExpectedAsset.__table__).where(
+            InventoryAuditExpectedAsset.audit_id == audit.id,
+            InventoryAuditExpectedAsset.maintenance_id_at_start == request_id,
+        )).one()
+        assert expected.asset_id == foundation_rows["assets"][0]
+        tables = (REQUESTS, EVENTS, InventoryAudit.__table__, InventoryAuditExpectedAsset.__table__)
+        before = tuple(connection.execute(sa.select(table).order_by(*table.primary_key)).all() for table in tables)
+        assert_error(
+            connection, lambda: connection.execute(sa.text("TRUNCATE maintenance_requests, maintenance_events")),
+            "0A000",
+        )
+        with pytest.raises(DBAPIError) as error:
+            with connection.begin_nested():
+                connection.execute(sa.text(
+                    "TRUNCATE maintenance_requests, maintenance_events, inventory_audit_expected_assets, "
+                    "inventory_audit_scans, inventory_audit_discrepancies"
+                ))
+        assert error.value.orig.sqlstate == "55000"
+        assert error.value.orig.diag.message_primary == "Maintenance history cannot be updated, deleted, or truncated"
+        assert before == tuple(connection.execute(sa.select(table).order_by(*table.primary_key)).all() for table in tables)
 
 
 def test_terminal_records_are_immutable_and_recovery_is_linked(database, foundation_rows):

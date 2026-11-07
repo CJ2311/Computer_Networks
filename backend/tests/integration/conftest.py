@@ -101,7 +101,7 @@ def database(test_database):
             with Operations.context(context):
                 for prefix in (
                     "f9bc7a594a00", "df453131d3d8", "ef14e8f62260",
-                    "a3c7e91b6d20", "b7d2f90c4e61", "c4e8a17d92f6",
+                    "a3c7e91b6d20", "b7d2f90c4e61", "c4e8a17d92f6", "d6f2b8a931c0",
                 ):
                     path = next(revisions.glob(prefix + "_*.py"))
                     spec = importlib.util.spec_from_file_location("test_revision_" + prefix, path)
