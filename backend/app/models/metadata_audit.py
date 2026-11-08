@@ -6,7 +6,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.app.database import Base
+from backend.app.base import Base
 
 
 class MetadataAuditEvent(Base):

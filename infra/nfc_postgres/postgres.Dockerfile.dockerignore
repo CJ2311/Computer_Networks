@@ -1,0 +1,5 @@
+**
+!infra/
+!infra/nfc_postgres/
+!infra/nfc_postgres/bootstrap.sh
+!infra/nfc_postgres/clear-init-passwords.sh

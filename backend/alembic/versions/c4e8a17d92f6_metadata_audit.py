@@ -53,8 +53,8 @@ def _writer(connection, name, schema):
             raise RuntimeError(f"Unsafe or missing metadata audit role: {role}")
     _validate_incoming_memberships(connection)
     safe = connection.scalar(sa.text(f"""
-        SELECT NOT has_schema_privilege('{RUNTIME}', '{schema}', 'CREATE')
-           AND NOT has_schema_privilege('{WRITER}', '{schema}', 'CREATE')
+        SELECT NOT has_schema_privilege('{RUNTIME}', :schema_name, 'CREATE')
+           AND NOT has_schema_privilege('{WRITER}', :schema_name, 'CREATE')
            AND NOT has_parameter_privilege('{RUNTIME}', 'session_replication_role', 'SET')
            AND NOT EXISTS (
                SELECT 1 FROM pg_database WHERE datname = current_database()
@@ -69,7 +69,7 @@ def _writer(connection, name, schema):
            )
            AND NOT has_any_column_privilege('{RUNTIME}', '{schema}.users', 'INSERT,UPDATE')
            AND NOT has_table_privilege('{RUNTIME}', '{schema}.users', 'DELETE,TRUNCATE')
-    """))
+    """), {"schema_name": name})
     if not safe:
         raise RuntimeError("Runtime must not control audit sources or staff identity records")
     return WRITER, True

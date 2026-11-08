@@ -1,0 +1,54 @@
+services:
+  postgres:
+    build:
+      context: ../..
+      dockerfile: infra/nfc_postgres/postgres.Dockerfile
+    environment:
+      NFC_DISPOSABLE_OPT_IN: ${NFC_DISPOSABLE_OPT_IN:?Explicit disposable-test opt-in required}
+    network_mode: none
+    volumes:
+      - identity:/run/nfc-harness
+    tmpfs:
+      - /var/lib/postgresql:size=768m,mode=0700
+    shm_size: 128mb
+    healthcheck:
+      test: [CMD, pg_isready, -h, 127.0.0.1, -p, '5432', -U, nfc_controller, -d, postgres]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+    logging:
+      driver: none
+    labels:
+      org.inventory.harness: nfc-disposable
+  worker:
+    build:
+      context: ../..
+      dockerfile: infra/nfc_postgres/worker.Dockerfile
+    network_mode: service:postgres
+    user: '18085:18085'
+    group_add: ['18084']
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NFC_DISPOSABLE_OPT_IN: ${NFC_DISPOSABLE_OPT_IN:?Explicit disposable-test opt-in required}
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+    volumes:
+      - identity:/run/nfc-harness:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    labels:
+      org.inventory.harness: nfc-disposable
+volumes:
+  identity:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1m,mode=0755
+    labels:
+      org.inventory.harness: nfc-disposable

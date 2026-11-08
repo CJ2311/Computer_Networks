@@ -4,7 +4,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.engine import URL
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy.orm import sessionmaker
+
+from backend.app.base import Base
 
 
 # Locate the .env file in the project root
@@ -19,7 +21,7 @@ DATABASE_URL = URL.create(
     password=os.environ["INVENTORY_APP_PASSWORD"],
     host="localhost",
     port=5432,
-    database="inventory_db",
+    database=os.getenv("INVENTORY_DATABASE_NAME", "inventory_db"),
 )
 
 
@@ -38,9 +40,6 @@ SessionLocal = sessionmaker(
 )
 
 
-# Base class for database models
-class Base(DeclarativeBase):
-    pass
 
 from collections.abc import Generator
 

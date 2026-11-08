@@ -1,0 +1,2 @@
+# Intentionally no values: explicit --env-file prevents root .env discovery.
+# Opt-in must be supplied by the operator's environment, never by this file.
