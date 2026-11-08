@@ -253,3 +253,21 @@ volume. No project network is expected. PostgreSQL tmpfs disappears with the con
 Build images/cache remain unless separately identified and approved for removal.
 A failed run needs the same scoped cleanup. Never "repair" it by changing roles
 or permissions on the existing PostgreSQL server.
+
+
+## Application extension regression suite
+
+The worker also runs `tests/test_operations.py` after initializing each marked disposable database through the original
+seven-revision runner. It then uses `alembic_nfc_application.ini` and `apply_application` on an administrator connection
+with the same transaction advisory lock and strict NFC identity checks. New revision `e8a4c2d190ab` lives in the separate
+application version directory; the seven original files and pinned demo environment remain unchanged.
+
+Coverage includes opening balance capture, immutable stock ledger, runtime privilege denial, quantity issue/return,
+retry fingerprints, student scoping, competing stock changes, rollback/backend termination, atomic bulk registration,
+offsite policy, real maintenance notes, trigger predicate rejection, and concurrent/idempotent reminder claims.
+SMTP is always replaced in these tests; no emails or college-provider calls occur. Worker dependencies install at image
+build, and application database.py/.env/host credentials are still excluded from the build context.
+
+Failure output remains structured and allowlisted: test identifier, phase, fixed reason where available, SQLSTATE and
+repository filename/line references. Exception strings, SQL, captured output, parameters and credentials are withheld.
+See `docs/backend/DEPLOYMENT.md` for production permissions and remaining operational limits.

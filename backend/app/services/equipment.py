@@ -12,8 +12,7 @@ from backend.app.services.inventory_transactions import flush_stage, transaction
 from backend.app.services.registration import authorize_registration, UNCERTAIN_COMMIT_DETAIL
 
 
-@transaction(uncertain_commit_detail=UNCERTAIN_COMMIT_DETAIL)
-def create_equipment(db: Session, equipment_data: EquipmentCreate, actor: User) -> EquipmentResponse:
+def _create_equipment(db: Session, equipment_data: EquipmentCreate, actor: User) -> EquipmentResponse:
     """Register one definition in an owned transaction; snapshot before commit."""
     authorize_registration(db, actor)
     equipment = Equipment(**equipment_data.model_dump())
@@ -33,3 +32,15 @@ def update_equipment(
     staff = authorize_registration(db, actor)
     persist_metadata(db, equipment, update_data, staff)
     return EquipmentResponse.model_validate(equipment)
+
+
+@transaction(uncertain_commit_detail=UNCERTAIN_COMMIT_DETAIL)
+def create_equipment(db, equipment_data: EquipmentCreate, actor: User) -> EquipmentResponse:
+    return _create_equipment(db, equipment_data, actor)
+
+
+@transaction(uncertain_commit_detail=UNCERTAIN_COMMIT_DETAIL)
+def create_equipment_bulk(db, items, actor: User) -> list[EquipmentResponse]:
+    if not 1 <= len(items) <= 100:
+        raise HTTPException(422, "A batch must contain between one and 100 records")
+    return [_create_equipment(db, item, actor) for item in items]

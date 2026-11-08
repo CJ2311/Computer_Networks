@@ -1,8 +1,10 @@
 from ipaddress import ip_address
+from typing import Annotated
 
 from fastapi import HTTPException, Request, status
 
 from backend.app.auth.config import is_dev_auth_enabled
+from backend.app.auth.tokens import token_identity, token_mode
 from backend.app.models.user import UserRole
 
 
@@ -41,11 +43,40 @@ from backend.app.models.user import User
 
 def get_current_user(
     request: Request,
-    x_dev_user: str | None = Header(default=None),
+    x_dev_user: Annotated[str | None, Header()] = None,
     db: Session = Depends(get_db),
+    authorization: Annotated[str | None, Header()] = None,
 ) -> User:
-    """Resolve a fictional user for local development only."""
+    """Resolve configured bearer credentials or explicit local development identity."""
 
+    import os
+    if os.getenv("AUTH_MODE", "").strip() == "college_introspection":
+        if x_dev_user:
+            raise HTTPException(401, "Development identity cannot be combined with college authentication")
+        from backend.app.auth.college import introspect
+        from backend.app.models.operations import ExternalIdentity
+        issuer, subject = introspect(authorization)
+        user = db.scalar(select(User).join(ExternalIdentity, ExternalIdentity.user_id == User.id).where(
+            ExternalIdentity.issuer == issuer, ExternalIdentity.subject == subject
+        ).execution_options(populate_existing=True))
+        if user is None or not user.is_active:
+            raise HTTPException(403, "College identity is not provisioned or is inactive")
+        return user
+
+    if token_mode():
+        if x_dev_user:
+            raise HTTPException(401, "Development identity cannot be combined with bearer authentication")
+        college_id = token_identity(authorization)
+        user = db.scalar(select(User).where(User.college_id == college_id).execution_options(populate_existing=True))
+        if user is None:
+            raise HTTPException(401, "Invalid credentials", headers={"WWW-Authenticate": "Bearer"})
+        if not user.is_active:
+            raise HTTPException(403, "User account is inactive")
+        return user
+
+    # Supplying a bearer token never silently falls back to development identity.
+    if authorization is not None:
+        raise HTTPException(503, "Bearer authentication is not configured")
     require_local_dev_auth(request)
 
     if not x_dev_user:

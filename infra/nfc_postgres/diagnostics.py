@@ -9,6 +9,8 @@ FILES = ["infra/nfc_postgres/harness.py", "infra/nfc_postgres/worker.py",
          "infra/nfc_postgres/tests/test_deployment.py", "scripts/deploy_nfc_demo.py",
          "backend/alembic/safety.py", "backend/alembic_nfc_demo/env.py"]
 FILES += [str(p.relative_to(ROOT)).replace("\\", "/") for p in (ROOT / "backend/alembic/versions").glob("*.py")]
+FILES += ["backend/alembic/application_safety.py", "infra/nfc_postgres/tests/test_operations.py"]
+FILES += [str(p.relative_to(ROOT)).replace("\\", "/") for p in (ROOT / "backend/alembic/application_versions").glob("*.py")]
 SAFE_FILES = set(FILES)
 SAFE_REASONS = set()
 SAFE_TESTS = set()

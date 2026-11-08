@@ -93,7 +93,7 @@ def _id(value, label: str) -> UUID:
 def _text(value, label: str, maximum: int, required: bool = True) -> str | None:
     if value is None and not required:
         return None
-    if not isinstance(value, str) or not value.strip() or len(value) > maximum:
+    if not isinstance(value, str) or not value.strip() or len(value) > maximum or "\x00" in value:
         raise HTTPException(status_code=422, detail=f"{label} must be nonblank and at most {maximum} characters")
     return value  # Preserve the original report/notes, including intentional formatting.
 
@@ -456,6 +456,15 @@ def cancel_maintenance_request(db: Session, request_id: UUID, actor: User,
                                      "cancelled_by": user.id, "cancellation_reason": reason})
 
 
+@_transaction
+def add_maintenance_note(db: Session, request_id: UUID, actor: User,
+                         expected_version: int, note: str) -> MaintenanceRecord:
+    asset, checkout, request, user = _request_context(db, request_id, actor, STAFF, expected_version)
+    note = _text(note, "Maintenance note", 5000)
+    return _persist(db, request, asset, user.id, _now(db, request),
+                    _state(request, asset), "NOTE_ADDED", note)
+
+
 def get_maintenance_request(db: Session, request_id: UUID, actor: User) -> MaintenanceRecord:
     _clean_session(db)
     with db.no_autoflush:
@@ -484,3 +493,32 @@ def list_maintenance_events(db: Session, request_id: UUID, actor: User,
             MaintenanceEvent.request_id == request_id
         ).order_by(MaintenanceEvent.sequence).limit(limit + 1).offset(offset)).mappings().all()
         return MaintenanceEventPage(tuple(MaintenanceEventRecord(**row) for row in rows[:limit]), limit, offset, len(rows) > limit)
+
+
+@dataclass(frozen=True)
+class MaintenancePage:
+    items: tuple[MaintenanceRecord, ...]
+    limit: int
+    offset: int
+    has_more: bool
+
+
+def list_maintenance_requests(db: Session, actor: User, limit: int = 25, offset: int = 0,
+                              status: str | None = None, asset_id: UUID | None = None) -> MaintenancePage:
+    _clean_session(db)
+    if type(limit) is not int or not 1 <= limit <= 100 or type(offset) is not int or not 0 <= offset < 2**63:
+        raise HTTPException(422, "Invalid maintenance pagination")
+    if status is not None and status not in (*ACTIVE, "COMPLETED", "CANCELLED"):
+        raise HTTPException(422, "Invalid maintenance status")
+    with db.no_autoflush:
+        _authorize(db, actor)
+        statement = select(*MaintenanceRequest.__table__.c, EquipmentAsset.condition_status,
+                           EquipmentAsset.availability_status, EquipmentAsset.maintenance_hold).join(
+                               EquipmentAsset, EquipmentAsset.id == MaintenanceRequest.asset_id)
+        if status is not None:
+            statement = statement.where(MaintenanceRequest.status == status)
+        if asset_id is not None:
+            statement = statement.where(MaintenanceRequest.asset_id == _id(asset_id, "asset ID"))
+        rows = db.execute(statement.order_by(MaintenanceRequest.reported_at.desc(),
+                                            MaintenanceRequest.id.desc()).limit(limit + 1).offset(offset)).mappings().all()
+        return MaintenancePage(tuple(MaintenanceRecord(**row) for row in rows[:limit]),limit,offset,len(rows)>limit)

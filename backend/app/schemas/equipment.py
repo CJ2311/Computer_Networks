@@ -21,6 +21,13 @@ DefaultLocation = Annotated[str, Field(min_length=1, max_length=150)]
 class _EquipmentMetadata(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
+    @field_validator("*")
+    @classmethod
+    def reject_nul_in_text(cls, value):
+        if isinstance(value, str) and "\x00" in value:
+            raise ValueError("Text cannot contain NUL characters")
+        return value
+
     manufacturer: str | None = Field(default=None, max_length=100)
     model_number: str | None = Field(default=None, max_length=100)
     description: str | None = None
@@ -89,3 +96,8 @@ class EquipmentResponse(BaseModel):
     purchase_price: Decimal | None
 
     created_at: datetime
+
+
+class EquipmentBulkCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    items: list[EquipmentCreate] = Field(min_length=1,max_length=100)

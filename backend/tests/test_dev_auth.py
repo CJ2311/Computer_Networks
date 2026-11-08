@@ -51,27 +51,22 @@ def test_dev_auth_disabled(monkeypatch):
 from unittest.mock import patch
 
 from backend.app.auth.dependencies import get_current_user
-from backend.app.database import SessionLocal
+from backend.app.models.user import User
 
 
 def test_get_current_dev_admin():
     request = Mock()
     request.client.host = "127.0.0.1"
 
-    with SessionLocal() as db:
-        with patch(
-            "backend.app.auth.dependencies.is_dev_auth_enabled",
-            return_value=True,
-        ):
-            user = get_current_user(
-                request=request,
-                x_dev_user="DEV-ADMIN",
-                db=db,
-            )
+    db = Mock()
+    db.scalar.return_value = User(college_id="DEV-ADMIN", role="ADMIN", is_active=True)
+    with patch("backend.app.auth.dependencies.is_dev_auth_enabled", return_value=True):
+        user = get_current_user(request=request, x_dev_user="DEV-ADMIN", db=db)
 
     assert user.college_id == "DEV-ADMIN"
     assert user.role == "ADMIN"
     assert user.is_active is True
+    db.scalar.assert_called_once()
 
 @pytest.mark.parametrize(
     "dev_user",
@@ -85,19 +80,13 @@ def test_invalid_dev_users(dev_user):
     request = Mock()
     request.client.host = "127.0.0.1"
 
-    with SessionLocal() as db:
-        with patch(
-            "backend.app.auth.dependencies.is_dev_auth_enabled",
-            return_value=True,
-        ):
-            with pytest.raises(HTTPException) as error:
-                get_current_user(
-                    request=request,
-                    x_dev_user=dev_user,
-                    db=db,
-                )
+    db = Mock()
+    with patch("backend.app.auth.dependencies.is_dev_auth_enabled", return_value=True):
+        with pytest.raises(HTTPException) as error:
+            get_current_user(request=request, x_dev_user=dev_user, db=db)
 
     assert error.value.status_code == 401
+    db.scalar.assert_not_called()
 
 def test_inactive_dev_user():
     request = Mock()

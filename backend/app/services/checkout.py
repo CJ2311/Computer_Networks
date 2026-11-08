@@ -104,11 +104,12 @@ def create_checkout(
     issued_by: User,
     due_at: datetime,
     notes: str | None = None,
+    destination: str | None = None,
 ) -> CheckoutResponse:
     asset_id = maintenance._id(asset_id, "asset ID")
     student_id = maintenance._id(student_id, "student ID")
     maintenance._authorize(db, issued_by)
-    if notes is not None and (not isinstance(notes, str) or len(notes) > 1000):
+    if notes is not None and (not isinstance(notes, str) or len(notes) > 1000 or "\x00" in notes):
         raise HTTPException(status_code=422, detail="Checkout notes must be at most 1000 characters")
     asset = validate_checkout_asset(db, asset_id)
     # Parent names are non-key values: FOR SHARE, not FOR KEY SHARE.
@@ -118,6 +119,9 @@ def create_checkout(
     )
     if equipment is None:
         raise HTTPException(status_code=409, detail="Asset equipment is missing")
+    if destination is not None:
+        from backend.app.services.lending_policy import allowed_destination
+        destination=allowed_destination(db,equipment,asset.location,destination)
     active = maintenance._locked(db, EquipmentCheckout, EquipmentCheckout.asset_id == asset_id,
                                  EquipmentCheckout.status == "BORROWED")
     if active is not None:
@@ -137,6 +141,11 @@ def create_checkout(
     flush_stage(db, asset)
     db.add(checkout)
     flush_stage(db, checkout)
+    if destination is not None:
+        from backend.app.models.operations import LoanDestination
+        record = LoanDestination(id=checkout.id,destination=destination)
+        db.add(record)
+        flush_stage(db,record)
     response = CheckoutResponse.model_validate(checkout)
     # Detect a deadline expiring during persistence/response validation too.
     validate_checkout_deadline(due_at, maintenance._now(db))

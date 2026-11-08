@@ -3,7 +3,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from typing import Literal
 
@@ -88,36 +88,59 @@ class MaintenanceEventPageResponse(BaseModel):
     offset: int
     has_more: bool
 
-class MaintenanceIssueCreate(BaseModel):
+class _MaintenanceInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("*")
+    @classmethod
+    def valid_text(cls, value):
+        if isinstance(value, str) and (not value.strip() or "\x00" in value):
+            raise ValueError("Text must be nonblank and contain no NUL characters")
+        return value
+
+
+class MaintenanceIssueCreate(_MaintenanceInput):
     asset_id: UUID
     issue_type: Literal["DAMAGE", "MALFUNCTION", "INSPECTION"]
     issue_description: str = Field(min_length=1, max_length=4000)
 
 
-class MaintenanceRecoveryCreate(BaseModel):
+class MaintenanceRecoveryCreate(_MaintenanceInput):
     issue_description: str = Field(min_length=1, max_length=4000)
 
 
-class MaintenanceAssignmentCreate(BaseModel):
+class MaintenanceAssignmentCreate(_MaintenanceInput):
     assignee_id: UUID
     expected_version: int = Field(strict=True, ge=1, lt=2**31 - 1)
 
 
-class MaintenanceVersionRequest(BaseModel):
+class MaintenanceVersionRequest(_MaintenanceInput):
     expected_version: int = Field(strict=True, ge=1, lt=2**31 - 1)
 
 
-class MaintenanceRepairSubmission(BaseModel):
+class MaintenanceRepairSubmission(_MaintenanceInput):
     expected_version: int = Field(strict=True, ge=1, lt=2**31 - 1)
     repair_notes: str = Field(min_length=1, max_length=5000)
 
 
-class MaintenanceVerificationCreate(BaseModel):
+class MaintenanceVerificationCreate(_MaintenanceInput):
     expected_version: int = Field(strict=True, ge=1, lt=2**31 - 1)
     outcome: Literal["PASS", "FAIL"]
     notes: str = Field(min_length=1, max_length=5000)
 
 
-class MaintenanceCancellationCreate(BaseModel):
+class MaintenanceCancellationCreate(_MaintenanceInput):
     expected_version: int = Field(strict=True, ge=1, lt=2**31 - 1)
     reason: str = Field(min_length=1, max_length=4000)
+
+
+class MaintenanceNoteCreate(MaintenanceVersionRequest):
+    note: str = Field(min_length=1, max_length=5000)
+
+
+class MaintenancePageResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    items: tuple[MaintenanceResponse, ...]
+    limit: int
+    offset: int
+    has_more: bool

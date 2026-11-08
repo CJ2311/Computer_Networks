@@ -28,6 +28,13 @@ Location = Annotated[str, Field(min_length=1, max_length=150)]
 class _AssetMetadata(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
+    @field_validator("*")
+    @classmethod
+    def reject_nul_in_text(cls, value):
+        if isinstance(value, str) and "\x00" in value:
+            raise ValueError("Text cannot contain NUL characters")
+        return value
+
     nfc_tag_id: str | None = Field(default=None, max_length=100)
     serial_number: str | None = Field(default=None, max_length=100)
 
@@ -80,3 +87,8 @@ class AssetResponse(BaseModel):
     availability_status: str
     condition_status: str
     maintenance_hold: bool
+
+
+class AssetBulkCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    items: list[AssetCreate] = Field(min_length=1,max_length=100)

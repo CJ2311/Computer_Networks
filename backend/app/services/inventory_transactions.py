@@ -98,8 +98,8 @@ def _install_guards(db: Session, owner: _Owner):
             rows = context.compiled_parameters
             if len(rows) != 1:
                 raise _conflict("Unexpected batch in inventory flush stage")
-            # All current inventory tables have a single UUID id. UOW updates
-            # bind the primary key as <table>_id; inserts bind it as id.
+            # Guarded tables have one UUID primary key, including equipment_id.
+            # UOW updates bind <table>_<primary key>; inserts bind the mapped name.
             pk, = state.mapper.local_table.primary_key.columns
             key = pk.name if context.isinsert else f"{pk.table.name}_{pk.name}"
             identifier = state.dict.get(pk.key)

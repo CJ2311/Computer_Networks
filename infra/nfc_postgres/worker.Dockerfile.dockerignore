@@ -19,6 +19,15 @@
 !infra/nfc_postgres/requirements.txt
 !infra/nfc_postgres/tests/
 !infra/nfc_postgres/tests/*.py
+
+!backend/app/services/
+!backend/app/services/*.py
+!backend/app/schemas/
+!backend/app/schemas/*.py
+!backend/alembic/application_versions/
+!backend/alembic/application_versions/*.py
+!backend/alembic/application_safety.py
+!alembic_nfc_application.ini
 **/__pycache__/
 **/.pytest_cache/
 **/.env*

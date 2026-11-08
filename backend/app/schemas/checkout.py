@@ -2,15 +2,28 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-class CheckoutCreate(BaseModel):
+class _CheckoutInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("notes", "destination", check_fields=False)
+    @classmethod
+    def valid_notes(cls, value):
+        if value is not None and "\x00" in value:
+            raise ValueError("Notes cannot contain NUL characters")
+        return value
+
+
+
+class CheckoutCreate(_CheckoutInput):
     model_config = ConfigDict(extra="forbid")
 
     asset_id: UUID
     student_id: UUID
     due_at: datetime
+    destination: str | None = Field(None,min_length=1,max_length=150)
     notes: str | None = Field(default=None, max_length=1000)
 
 
@@ -32,7 +45,7 @@ class CheckoutResponse(BaseModel):
 ReturnCondition = Literal["WORKING", "DAMAGED", "UNDER_REPAIR"]
 
 
-class ReturnCreate(BaseModel):
+class ReturnCreate(_CheckoutInput):
     model_config = ConfigDict(extra="forbid")
 
     condition_status: ReturnCondition

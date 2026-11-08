@@ -112,7 +112,9 @@ def expected_tables(revision):
         raise DeploymentError("Unknown deployment revision")
     if revision is None:
         return set()
-    tables = set(Base.metadata.tables)
+    tables = {"users", "equipment", "equipment_assets", "equipment_stock", "equipment_checkouts",
+              "maintenance_requests", "maintenance_events", "metadata_audit_events", "inventory_audits",
+              "inventory_audit_expected_assets", "inventory_audit_scans", "inventory_audit_discrepancies"}
     if revision != HEAD:
         tables -= {name for name in tables if name.startswith("inventory_audit")}
     if revision == B7:

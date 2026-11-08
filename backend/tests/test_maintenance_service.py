@@ -587,3 +587,58 @@ def test_maintenance_sources_never_use_selective_session_flush():
         calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
                  and isinstance(node.func, ast.Attribute) and node.func.attr == "flush"]
         assert all(not call.args and not call.keywords for call in calls), relative
+
+
+def test_notes_preserve_state_and_append_versioned_event(case):
+    c = case
+    result = run(c, service.add_maintenance_note, note="Repair part ordered")
+    assert result.version == 2 and result.status == "OPEN"
+    assert result.issue_description == "Original issue" and result.maintenance_hold
+    assert c.events[-1].event_type == "NOTE_ADDED"
+    assert c.events[-1].note == "Repair part ordered"
+    assert c.events[-1].sequence == 2
+    c.db.commit.assert_called_once()
+
+
+@pytest.mark.parametrize("actor", ["student", "inactive"])
+def test_notes_require_active_staff(case, actor):
+    assert_http(403, lambda: run(case, service.add_maintenance_note, actor=actor, note="note"))
+    assert not case.events
+    case.db.rollback.assert_called_once()
+
+
+def test_note_stale_version_rolls_back(case):
+    assert_http(409, lambda: run(case, service.add_maintenance_note, expected_version=2,note="note"))
+    assert not case.events
+    case.db.rollback.assert_called_once()
+
+
+def test_note_flush_failure_propagates_and_rolls_back(case):
+    case.db.flush.side_effect=RuntimeError("write interrupted")
+    with pytest.raises(RuntimeError):
+        run(case, service.add_maintenance_note,note="note")
+    case.db.rollback.assert_called_once()
+    case.db.commit.assert_not_called()
+
+
+def test_maintenance_list_filters_paginates_and_is_read_only(case):
+    c=case
+    row={field.name:getattr(service._snapshot(c.request,c.asset),field.name) for field in fields(service.MaintenanceRecord)}
+    c.db.execute.return_value.mappings.return_value.all.return_value=[row,row]
+    page=service.list_maintenance_requests(c.db,c.users["faculty"],limit=1,offset=2,status="OPEN",asset_id=c.asset.id)
+    assert len(page.items)==1 and page.has_more and page.offset==2
+    statement=c.db.execute.call_args.args[0]
+    assert statement._limit_clause.value==2 and statement._offset_clause.value==2
+    assert {"OPEN",c.asset.id}.issubset(set(statement.compile().params.values()))
+    c.db.flush.assert_not_called();c.db.commit.assert_not_called()
+
+
+@pytest.mark.parametrize("kwargs",[{"limit":0},{"offset":-1},{"status":"OTHER"}])
+def test_maintenance_list_invalid_filters(case,kwargs):
+    assert_http(422,lambda:service.list_maintenance_requests(case.db,case.users["faculty"],**kwargs))
+    case.db.execute.assert_not_called()
+
+
+def test_maintenance_list_requires_staff(case):
+    assert_http(403,lambda:service.list_maintenance_requests(case.db,case.users["student"]))
+    case.db.execute.assert_not_called()

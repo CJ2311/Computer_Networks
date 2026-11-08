@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, status
+from backend.app.schemas.asset import AssetBulkCreate
+from backend.app.services.asset import create_asset_bulk
+from fastapi import APIRouter, Depends, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
@@ -7,7 +9,7 @@ from backend.app.auth.dependencies import require_roles
 from backend.app.database import get_db, get_inventory_write_db
 from backend.app.models.user import UserRole
 from backend.app.schemas.asset import AssetCreate, AssetResponse, AssetUpdate
-from backend.app.services.asset import create_asset, update_asset
+from backend.app.services.asset import create_asset, update_asset, lookup_asset
 
 from uuid import UUID
 from fastapi import HTTPException
@@ -42,6 +44,8 @@ def register_asset(
 )
 def list_assets(
     db: Session = Depends(get_db),
+    limit: int = Query(default=100, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, lt=2**63),
     _authorized_user=Depends(
         require_roles(
             UserRole.ADMIN,
@@ -52,9 +56,17 @@ def list_assets(
 ):
     return db.scalars(
         select(EquipmentAsset)
-        .order_by(EquipmentAsset.asset_code)
-        .limit(100)
+        .order_by(EquipmentAsset.asset_code, EquipmentAsset.id)
+        .limit(limit).offset(offset)
     ).all()
+
+@router.get("/lookup", response_model=AssetResponse)
+def identify_asset(
+    nfc_tag_id: str = Query(min_length=1, max_length=100),
+    db: Session = Depends(get_db),
+    actor=Depends(require_roles(UserRole.ADMIN, UserRole.FACULTY, UserRole.LAB_ASSISTANT)),
+):
+    return lookup_asset(db, nfc_tag_id)
 
 @router.get(
     "/{asset_id}",
@@ -89,3 +101,11 @@ def patch_asset(
     actor=Depends(require_roles(UserRole.ADMIN, UserRole.FACULTY, UserRole.LAB_ASSISTANT)),
 ):
     return update_asset(db, asset_id, update_data, actor)
+
+
+@router.post("/bulk", response_model=list[AssetResponse], status_code=201)
+def register_asset_bulk(
+    data: AssetBulkCreate, db: Session = Depends(get_inventory_write_db),
+    actor=Depends(require_roles(UserRole.ADMIN,UserRole.FACULTY,UserRole.LAB_ASSISTANT)),
+):
+    return create_asset_bulk(db,data.items,actor)

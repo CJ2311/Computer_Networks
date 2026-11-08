@@ -1,6 +1,7 @@
 """API endpoints for equipment maintenance."""
 
 from uuid import UUID
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
@@ -19,6 +20,8 @@ from backend.app.schemas.maintenance import (
     MaintenanceRepairSubmission,
     MaintenanceVerificationCreate,
     MaintenanceCancellationCreate,
+    MaintenanceNoteCreate,
+    MaintenancePageResponse,
 )
 
 from backend.app.services.maintenance import (
@@ -31,6 +34,8 @@ from backend.app.services.maintenance import (
     cancel_maintenance_request,
     get_maintenance_request,
     list_maintenance_events,
+    add_maintenance_note,
+    list_maintenance_requests,
 )
 
 
@@ -38,6 +43,16 @@ router = APIRouter(
     prefix="/maintenance",
     tags=["Maintenance"],
 )
+
+
+@router.post("/{request_id}/notes", response_model=MaintenanceResponse)
+def append_note(
+    request_id: UUID,
+    data: MaintenanceNoteCreate,
+    db: Session = Depends(get_inventory_write_db),
+    actor: User = Depends(require_roles(UserRole.FACULTY, UserRole.LAB_ASSISTANT, UserRole.ADMIN)),
+):
+    return add_maintenance_note(db, request_id, actor, data.expected_version, data.note)
 
 
 @router.post(
@@ -256,3 +271,14 @@ def get_request_events(
         limit=limit,
         offset=offset,
     )
+
+
+@router.get("", response_model=MaintenancePageResponse)
+def list_requests(
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_roles(UserRole.ADMIN,UserRole.FACULTY,UserRole.LAB_ASSISTANT)),
+    limit: int = Query(25,ge=1,le=100), offset: int = Query(0,ge=0,lt=2**63),
+    status: Literal["OPEN","IN_PROGRESS","AWAITING_VERIFICATION","COMPLETED","CANCELLED"] | None = None,
+    asset_id: UUID | None = None,
+):
+    return list_maintenance_requests(db,actor,limit,offset,status,asset_id)

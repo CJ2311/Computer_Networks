@@ -22,3 +22,7 @@ __all__ = [
     "InventoryAuditScan",
     "InventoryAuditDiscrepancy",
 ]
+
+from .operations import ExternalIdentity, EquipmentLoanPolicy, LoanDestination, QuantityLoan, StockLedger, OverdueReminder
+
+__all__ += ["ExternalIdentity","EquipmentLoanPolicy","LoanDestination","QuantityLoan","StockLedger","OverdueReminder"]

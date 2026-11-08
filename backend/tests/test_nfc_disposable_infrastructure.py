@@ -80,7 +80,7 @@ def test_images_and_build_context_are_explicit():
     for name in ("worker", "postgres"):
         ignore = (INFRA / f"{name}.Dockerfile.dockerignore").read_text()
         assert ignore.startswith("**\n")
-    assert "**/.env*" in (INFRA / "worker.Dockerfile.dockerignore").read_text()
+    assert (INFRA / "worker.Dockerfile.dockerignore").read_text().rstrip().endswith("**/.env*")
     bootstrap = (INFRA / "bootstrap.sh").read_text()
     assert "/dev/urandom" in bootstrap
     assert "POSTGRES_PASSWORD_FILE" in bootstrap

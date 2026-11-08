@@ -1,6 +1,7 @@
 from uuid import UUID
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.models.checkout import EquipmentCheckout
@@ -14,8 +15,18 @@ from backend.app.services.inventory_transactions import flush_stage, transaction
 from backend.app.services.registration import authorize_registration, UNCERTAIN_COMMIT_DETAIL
 
 
-@transaction(uncertain_commit_detail=UNCERTAIN_COMMIT_DETAIL)
-def create_asset(db: Session, asset_data: AssetCreate, actor: User) -> AssetResponse:
+def lookup_asset(db: Session, nfc_tag_id: str) -> EquipmentAsset:
+    """Tags identify assets; they never authenticate users or authorize changes."""
+    if not isinstance(nfc_tag_id, str) or not nfc_tag_id.strip() or len(nfc_tag_id.strip()) > 100 or "\x00" in nfc_tag_id:
+        raise HTTPException(422, "Invalid NFC tag")
+    with db.no_autoflush:
+        asset = db.scalar(select(EquipmentAsset).where(EquipmentAsset.nfc_tag_id == nfc_tag_id.strip()))
+    if asset is None:
+        raise HTTPException(404, "Asset not found")
+    return asset
+
+
+def _create_asset(db: Session, asset_data: AssetCreate, actor: User) -> AssetResponse:
     authorize_registration(db, actor)
     equipment = db.get(Equipment, asset_data.equipment_id, populate_existing=True)
     if equipment is None:
@@ -56,3 +67,15 @@ def update_asset(
         raise HTTPException(status_code=409, detail=conflict)
     persist_metadata(db, asset, update_data, staff)
     return AssetResponse.model_validate(asset)
+
+
+@transaction(uncertain_commit_detail=UNCERTAIN_COMMIT_DETAIL)
+def create_asset(db, asset_data: AssetCreate, actor: User) -> AssetResponse:
+    return _create_asset(db, asset_data, actor)
+
+
+@transaction(uncertain_commit_detail=UNCERTAIN_COMMIT_DETAIL)
+def create_asset_bulk(db, items, actor: User) -> list[AssetResponse]:
+    if not 1 <= len(items) <= 100:
+        raise HTTPException(422, "A batch must contain between one and 100 records")
+    return [_create_asset(db, item, actor) for item in items]
