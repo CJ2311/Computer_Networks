@@ -46,7 +46,11 @@ are applied explicitly; users remain SELECT-only. Unknown default ACLs make exte
    identities, ownership, ACLs, trigger predicates/properties/functions and revision before committing. Failures roll
    back the migration and marker together. Re-running at the exact extension revision verifies without replay.
 4. Provision local users and verified issuer/subject mappings through a trusted administrative workflow, not runtime
-   role grants. Configure college auth, CORS and explicit application database name/password using deployment secrets.
+   role grants. Configure college auth, CORS and explicit application database connection settings using deployment secrets:
+   - `INVENTORY_DB_HOST`: PostgreSQL server host (defaults to `localhost`).
+   - `INVENTORY_DB_PORT`: PostgreSQL port (integer 1–65535, defaults to `5432`).
+   - `INVENTORY_DATABASE_NAME`: Target database name (defaults to `inventory_db`).
+   - `INVENTORY_APP_PASSWORD`: Runtime password for the `inventory_app` PostgreSQL user.
 5. Verify the application as inventory_app, then enable traffic. Never grant ALL to work around a preflight failure.
 
 The original NFC runner deliberately rejects the extension revision; use the extension runner for its verification.
