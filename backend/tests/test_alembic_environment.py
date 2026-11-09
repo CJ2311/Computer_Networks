@@ -199,7 +199,7 @@ def test_demo_uses_existing_single_revision_history():
     from alembic.script import ScriptDirectory
     demo = ScriptDirectory.from_config(Config("alembic_nfc_demo.ini"))
     ordinary = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert [r.revision for r in ordinary.walk_revisions()] == ["e8a4c2d190ab"] + [r.revision for r in demo.walk_revisions()]
+    assert [r.revision for r in ordinary.walk_revisions()] == ["c7d3e91024ab", "e8a4c2d190ab"] + [r.revision for r in demo.walk_revisions()]
     assert len(list(demo.walk_revisions())) == 7
 
 

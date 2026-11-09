@@ -164,7 +164,7 @@ from backend.app.base import Base
 from sqlalchemy.orm import configure_mappers
 configure_mappers()
 expected={"users","equipment","equipment_assets","equipment_stock","equipment_checkouts", "maintenance_requests","maintenance_events","metadata_audit_events","inventory_audits", "inventory_audit_expected_assets","inventory_audit_scans","inventory_audit_discrepancies"}
-expected|={"external_identities","equipment_loan_policies","loan_destinations","quantity_loans","stock_ledger","overdue_reminders"}
+expected|={"external_identities","equipment_loan_policies","loan_destinations","quantity_loans","stock_ledger","overdue_reminders","missing_equipment_incidents","missing_equipment_events"}
 assert set(Base.metadata.tables)==expected
 assert "backend.app.database" not in sys.modules
 '''

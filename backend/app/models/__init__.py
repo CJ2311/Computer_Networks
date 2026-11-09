@@ -24,5 +24,15 @@ __all__ = [
 ]
 
 from .operations import ExternalIdentity, EquipmentLoanPolicy, LoanDestination, QuantityLoan, StockLedger, OverdueReminder
+from .missing_equipment import MissingEquipmentIncident, MissingEquipmentEvent
 
-__all__ += ["ExternalIdentity","EquipmentLoanPolicy","LoanDestination","QuantityLoan","StockLedger","OverdueReminder"]
+__all__ += [
+    "ExternalIdentity",
+    "EquipmentLoanPolicy",
+    "LoanDestination",
+    "QuantityLoan",
+    "StockLedger",
+    "OverdueReminder",
+    "MissingEquipmentIncident",
+    "MissingEquipmentEvent",
+]

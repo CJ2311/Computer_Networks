@@ -1,5 +1,17 @@
 from backend.app.schemas.asset import AssetBulkCreate
 from backend.app.services.asset import create_asset_bulk
+from backend.app.schemas.missing_equipment import (
+    AssetMissingReportCreate,
+    AssetMissingReconcileCreate,
+    MissingIncidentResponse,
+    MissingEventResponse,
+)
+from backend.app.services.missing_equipment import (
+    report_asset_missing,
+    reconcile_missing_asset,
+    list_missing_incidents,
+    list_incident_events,
+)
 from fastapi import APIRouter, Depends, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -109,3 +121,87 @@ def register_asset_bulk(
     actor=Depends(require_roles(UserRole.ADMIN,UserRole.FACULTY,UserRole.LAB_ASSISTANT)),
 ):
     return create_asset_bulk(db,data.items,actor)
+
+
+@router.post(
+    "/{asset_id}/report-missing",
+    response_model=MissingIncidentResponse,
+    status_code=status.HTTP_200_OK,
+)
+def report_missing(
+    asset_id: UUID,
+    data: AssetMissingReportCreate,
+    db: Session = Depends(get_inventory_write_db),
+    actor=Depends(
+        require_roles(
+            UserRole.ADMIN,
+            UserRole.FACULTY,
+            UserRole.LAB_ASSISTANT,
+        )
+    ),
+):
+    return report_asset_missing(db, asset_id, data, actor=actor)
+
+
+@router.post(
+    "/{asset_id}/reconcile-missing",
+    response_model=MissingIncidentResponse,
+    status_code=status.HTTP_200_OK,
+)
+def reconcile_missing(
+    asset_id: UUID,
+    data: AssetMissingReconcileCreate,
+    db: Session = Depends(get_inventory_write_db),
+    actor=Depends(
+        require_roles(
+            UserRole.ADMIN,
+            UserRole.FACULTY,
+            UserRole.LAB_ASSISTANT,
+        )
+    ),
+):
+    return reconcile_missing_asset(db, asset_id, data, actor=actor)
+
+
+@router.get(
+    "/{asset_id}/missing-incidents",
+    response_model=list[MissingIncidentResponse],
+)
+def get_missing_incidents(
+    asset_id: UUID,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, lt=2**63),
+    db: Session = Depends(get_db),
+    actor=Depends(
+        require_roles(
+            UserRole.ADMIN,
+            UserRole.FACULTY,
+            UserRole.LAB_ASSISTANT,
+        )
+    ),
+):
+    return list_missing_incidents(db, asset_id, actor=actor, limit=limit, offset=offset)
+
+
+@router.get(
+    "/{asset_id}/missing-incidents/{incident_id}/events",
+    response_model=list[MissingEventResponse],
+)
+def get_incident_events(
+    asset_id: UUID,
+    incident_id: UUID,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, lt=2**63),
+    db: Session = Depends(get_db),
+    actor=Depends(
+        require_roles(
+            UserRole.ADMIN,
+            UserRole.FACULTY,
+            UserRole.LAB_ASSISTANT,
+        )
+    ),
+):
+    return list_incident_events(
+        db, asset_id, incident_id, actor=actor, limit=limit, offset=offset
+    )
+

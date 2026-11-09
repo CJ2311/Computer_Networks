@@ -7,8 +7,9 @@ from sqlalchemy import inspect, text
 from backend.app.base import Base
 from scripts import deploy_nfc_demo as baseline
 
-HEAD="e8a4c2d190ab"
-TABLES={"external_identities","equipment_loan_policies","loan_destinations","quantity_loans","stock_ledger","overdue_reminders"}
+HEAD="c7d3e91024ab"
+PREVIOUS_REVISIONS={"e8a4c2d190ab"}
+TABLES={"external_identities","equipment_loan_policies","loan_destinations","quantity_loans","stock_ledger","overdue_reminders","missing_equipment_incidents","missing_equipment_events"}
 FUNCTIONS={"stock_history_protect","stock_change_capture","operations_no_delete","quantity_loan_guard","quantity_ledger_consistency"}
 OWNER="inventory_metadata_audit_owner"
 
@@ -22,7 +23,7 @@ def verify_application(c,settings):
     if c.scalar(text(f"SELECT version_num FROM {q}.alembic_version"))!=HEAD:
         raise RuntimeError("Unexpected application revision")
     for table in TABLES|{"equipment_stock"}:
-        allowed={"SELECT"} | ({"INSERT","UPDATE"} if table in {"equipment_loan_policies","overdue_reminders","equipment_stock","quantity_loans"} else {"INSERT"} if table=="loan_destinations" else set())
+        allowed={"SELECT"} | ({"INSERT","UPDATE"} if table in {"equipment_loan_policies","overdue_reminders","equipment_stock","quantity_loans","missing_equipment_incidents"} else {"INSERT"} if table in {"loan_destinations","missing_equipment_events"} else set())
         row=c.execute(text("""SELECT pg_get_userbyid(relowner),relowner FROM pg_class WHERE oid=CAST(:table AS regclass)"""),dict(table=f"{q}.{table}")).one()
         if row[0]!=OWNER:
             raise RuntimeError("Unexpected application object owner")
@@ -52,7 +53,7 @@ def verify_application(c,settings):
         OR has_table_privilege('inventory_app',:users,'DELETE,TRUNCATE,TRIGGER')
         OR EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
             WHERE n.nspname=:schema AND c.relkind='r' AND pg_get_userbyid(c.relowner)<>
-                CASE WHEN c.relname IN ('external_identities','equipment_loan_policies','loan_destinations','quantity_loans','stock_ledger','overdue_reminders','equipment_stock','metadata_audit_events')
+                CASE WHEN c.relname IN ('external_identities','equipment_loan_policies','loan_destinations','quantity_loans','stock_ledger','overdue_reminders','equipment_stock','metadata_audit_events','missing_equipment_incidents','missing_equipment_events')
                      THEN 'inventory_metadata_audit_owner' ELSE 'inventory_migrator' END)
         OR EXISTS(SELECT 1 FROM pg_database WHERE datname=current_database()
             AND pg_get_userbyid(datdba) IN ('inventory_app','inventory_metadata_audit_writer'))
@@ -96,6 +97,11 @@ def verify_application(c,settings):
         ("quantity_loans","quantity_loan_no_delete"):11,
         ("quantity_loans","quantity_loan_no_truncate"):34,
         ("quantity_loans","quantity_ledger_consistent"):21,
+        ("missing_equipment_incidents","missing_incident_no_delete"):11,
+        ("missing_equipment_incidents","missing_incident_no_truncate"):34,
+        ("missing_equipment_events","missing_event_no_delete"):11,
+        ("missing_equipment_events","missing_event_no_truncate"):34,
+        ("missing_equipment_events","missing_event_no_update"):19,
     }
     for table in ("inventory_audits","inventory_audit_expected_assets","inventory_audit_scans","inventory_audit_discrepancies"):
         parent=table=="inventory_audits"
@@ -125,6 +131,9 @@ def verify_application(c,settings):
             "stock_no_delete":"operations_no_delete", "stock_no_truncate":"operations_no_delete",
             "quantity_loan_validate":"quantity_loan_guard", "quantity_loan_no_delete":"operations_no_delete",
             "quantity_loan_no_truncate":"operations_no_delete", "quantity_ledger_consistent":"quantity_ledger_consistency",
+            "missing_incident_no_delete":"operations_no_delete", "missing_incident_no_truncate":"operations_no_delete",
+            "missing_event_no_delete":"operations_no_delete", "missing_event_no_truncate":"operations_no_delete",
+            "missing_event_no_update":"operations_no_delete",
             "inventory_audit_parent_validate":"inventory_audit_parent_guard", "inventory_audit_child_validate":"inventory_audit_child_guard",
             "inventory_audit_immutable":"inventory_audit_no_rewrite", "inventory_audit_no_truncate":"inventory_audit_no_rewrite",
         }.get(r[1],r[1])
@@ -154,7 +163,11 @@ def apply_application(c,settings):
             config=Config(str(Path(__file__).resolve().parents[2]/"alembic_nfc_application.ini"))
             config.attributes.update(connection=c,nfc_demo_identity=baseline.identity(settings,settings.administrator))
             command.upgrade(config,HEAD)
+        elif len(revisions)==1 and revisions[0] in PREVIOUS_REVISIONS:
+            config=Config(str(Path(__file__).resolve().parents[2]/"alembic_nfc_application.ini"))
+            config.attributes.update(connection=c,nfc_demo_identity=baseline.identity(settings,settings.administrator))
+            command.upgrade(config,HEAD)
         elif revisions!=[HEAD]:
-            raise RuntimeError("Application extension requires the completed NFC baseline")
+            raise RuntimeError("Application extension requires the completed NFC baseline or approved predecessor revision")
         baseline.check_connection(c,settings,settings.administrator)
         verify_application(c,settings)
