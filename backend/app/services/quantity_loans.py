@@ -92,15 +92,38 @@ def loan_view(db,loan,now=None):
     })
 
 
-def list_quantity(db,actor,limit=25,offset=0,loan_id=None,overdue=None):
+def list_quantity(
+    db,
+    actor,
+    limit=25,
+    offset=0,
+    loan_id=None,
+    overdue=None,
+    *,
+    student_id=None,
+    equipment_id=None,
+    status=None,
+):
     if type(limit) is not int or not 1<=limit<=100 or type(offset) is not int or not 0<=offset<2**63:
         raise HTTPException(422,"Invalid quantity history pagination")
+    if status is not None and status not in ("BORROWED", "RETURNED"):
+        raise HTTPException(422, "Invalid status filter")
     with db.no_autoflush:
         user=_authorize(db,actor,{"ADMIN","FACULTY","LAB_ASSISTANT","STUDENT"})
         now=_now(db)
         stmt=select(QuantityLoan)
         if user.role=="STUDENT":
+            if student_id is not None and student_id != user.id:
+                raise HTTPException(403, "Cannot filter another borrower's history")
             stmt=stmt.where(QuantityLoan.student_id==user.id)
+        elif student_id is not None:
+            stmt=stmt.where(QuantityLoan.student_id==student_id)
+        if equipment_id is not None:
+            stmt=stmt.where(QuantityLoan.equipment_id==equipment_id)
+        if status=="BORROWED":
+            stmt=stmt.where(QuantityLoan.returned_at.is_(None))
+        elif status=="RETURNED":
+            stmt=stmt.where(QuantityLoan.returned_at.is_not(None))
         if overdue is not None:
             predicate=(QuantityLoan.returned_at.is_(None)) & (QuantityLoan.due_at<now)
             stmt=stmt.where(predicate.is_(overdue))

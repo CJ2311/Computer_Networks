@@ -1,4 +1,5 @@
 """Quantity custody, stock history and explicit equipment lending policy."""
+from typing import Literal
 from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
@@ -27,9 +28,27 @@ def receive(loan_id: UUID,data: QuantityReturnCreate,db=Depends(get_inventory_wr
     return return_quantity(db,loan_id,data,actor)
 
 
-@router.get("/quantity-loans",response_model=QuantityLoanPage)
-def history(db=Depends(get_db),actor=Depends(readers),limit: int=Query(25,ge=1,le=100),offset: int=Query(0,ge=0,lt=2**63),overdue: bool | None=None):
-    return list_quantity(db,actor,limit,offset,overdue=overdue)
+@router.get("/quantity-loans", response_model=QuantityLoanPage)
+def history(
+    student_id: UUID | None = Query(default=None),
+    equipment_id: UUID | None = Query(default=None),
+    status: Literal["BORROWED", "RETURNED"] | None = Query(default=None),
+    overdue: bool | None = Query(default=None),
+    limit: int = Query(25, ge=1, le=100),
+    offset: int = Query(0, ge=0, lt=2**63),
+    db=Depends(get_db),
+    actor=Depends(readers),
+):
+    return list_quantity(
+        db,
+        actor,
+        limit,
+        offset,
+        overdue=overdue,
+        student_id=student_id,
+        equipment_id=equipment_id,
+        status=status,
+    )
 
 
 @router.get("/quantity-loans/{loan_id}",response_model=QuantityLoanResponse)
