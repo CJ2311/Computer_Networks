@@ -1,30 +1,38 @@
-from backend.app.schemas.asset import AssetBulkCreate
-from backend.app.services.asset import create_asset_bulk
+from uuid import UUID
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.orm import Session
+
+from backend.app.auth.dependencies import require_roles
+from backend.app.database import get_db, get_inventory_write_db
+from backend.app.models.equipment import EquipmentAsset
+from backend.app.models.user import UserRole
+from backend.app.schemas.asset import (
+    AssetBulkCreate,
+    AssetCreate,
+    AssetResponse,
+    AssetUpdate,
+    AvailabilityStatus,
+    ConditionStatus,
+)
 from backend.app.schemas.missing_equipment import (
     AssetMissingReportCreate,
     AssetMissingReconcileCreate,
-    MissingIncidentResponse,
     MissingEventResponse,
+    MissingIncidentResponse,
+)
+from backend.app.services.asset import (
+    create_asset,
+    create_asset_bulk,
+    list_assets_filtered,
+    lookup_asset,
+    update_asset,
 )
 from backend.app.services.missing_equipment import (
-    report_asset_missing,
-    reconcile_missing_asset,
-    list_missing_incidents,
     list_incident_events,
+    list_missing_incidents,
+    reconcile_missing_asset,
+    report_asset_missing,
 )
-from fastapi import APIRouter, Depends, status, Query
-from sqlalchemy.orm import Session
-from sqlalchemy import select
-
-from backend.app.models.equipment import EquipmentAsset
-from backend.app.auth.dependencies import require_roles
-from backend.app.database import get_db, get_inventory_write_db
-from backend.app.models.user import UserRole
-from backend.app.schemas.asset import AssetCreate, AssetResponse, AssetUpdate
-from backend.app.services.asset import create_asset, update_asset, lookup_asset
-
-from uuid import UUID
-from fastapi import HTTPException
 
 router = APIRouter(
     prefix="/assets",
@@ -55,9 +63,16 @@ def register_asset(
     response_model=list[AssetResponse],
 )
 def list_assets(
-    db: Session = Depends(get_db),
+    search: str | None = Query(default=None, max_length=100),
+    category: str | None = Query(default=None, max_length=100),
+    equipment_id: UUID | None = Query(default=None),
+    availability_status: AvailabilityStatus | None = Query(default=None),
+    condition_status: ConditionStatus | None = Query(default=None),
+    maintenance_hold: bool | None = Query(default=None),
+    location: str | None = Query(default=None, max_length=150),
     limit: int = Query(default=100, ge=1, le=100),
     offset: int = Query(default=0, ge=0, lt=2**63),
+    db: Session = Depends(get_db),
     _authorized_user=Depends(
         require_roles(
             UserRole.ADMIN,
@@ -66,11 +81,18 @@ def list_assets(
         )
     ),
 ):
-    return db.scalars(
-        select(EquipmentAsset)
-        .order_by(EquipmentAsset.asset_code, EquipmentAsset.id)
-        .limit(limit).offset(offset)
-    ).all()
+    return list_assets_filtered(
+        db,
+        search=search,
+        category=category,
+        equipment_id=equipment_id,
+        availability_status=availability_status,
+        condition_status=condition_status,
+        maintenance_hold=maintenance_hold,
+        location=location,
+        limit=limit,
+        offset=offset,
+    )
 
 @router.get("/lookup", response_model=AssetResponse)
 def identify_asset(

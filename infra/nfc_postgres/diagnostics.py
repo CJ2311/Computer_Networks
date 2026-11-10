@@ -14,6 +14,7 @@ FILES += [
     "infra/nfc_postgres/tests/test_operations.py",
     "infra/nfc_postgres/tests/test_missing_equipment.py",
     "infra/nfc_postgres/tests/test_inventory_reports.py",
+    "infra/nfc_postgres/tests/test_asset_search.py",
 ]
 FILES += [str(p.relative_to(ROOT)).replace("\\", "/") for p in (ROOT / "backend/alembic/application_versions").glob("*.py")]
 SAFE_FILES = set(FILES)
