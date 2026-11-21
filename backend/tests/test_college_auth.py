@@ -9,10 +9,12 @@ from starlette.requests import Request
 from backend.app.auth import college
 from backend.app.auth.dependencies import get_current_user
 from backend.app.models.user import User
+from backend.app.auth.introspection_limits import _configured_guard
 
 
 @pytest.fixture
 def provider(monkeypatch):
+    _configured_guard.cache_clear()
     values=dict(AUTH_MODE="college_introspection",COLLEGE_INTROSPECTION_URL="https://identity.example.invalid/introspection",
                 COLLEGE_ISSUER="https://identity.example.invalid",COLLEGE_AUDIENCE="inventory-api",COLLEGE_CLIENT_ID="inventory-client",COLLEGE_CLIENT_SECRET="synthetic-secret")
     for key,value in values.items():
@@ -23,7 +25,8 @@ def provider(monkeypatch):
     opener=Mock()
     opener.open.return_value=nullcontext(response)
     monkeypatch.setattr(college,"build_opener",lambda *handlers:opener)
-    return values,claims,opener,response
+    yield values,claims,opener,response
+    _configured_guard.cache_clear()
 
 
 def test_introspection_pins_endpoint_issuer_audience_and_tls(provider):
@@ -79,7 +82,7 @@ def test_redirect_is_always_rejected():
 def test_college_identity_mapping_controls_local_role(provider):
     request=Request({"type":"http","headers":[],"client":("198.51.100.1",1234)})
     provider[1]["roles"]=["ADMIN"]
-    db=Mock();user=User(role="STUDENT",is_active=True)
+    db=Mock();user=User(role="FACULTY",is_active=True)
     db.scalar.return_value=user
     assert get_current_user(request,db=db,authorization="Bearer token") is user
     sql=db.scalar.call_args.args[0]

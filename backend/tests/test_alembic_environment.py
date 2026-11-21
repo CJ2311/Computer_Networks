@@ -199,8 +199,37 @@ def test_demo_uses_existing_single_revision_history():
     from alembic.script import ScriptDirectory
     demo = ScriptDirectory.from_config(Config("alembic_nfc_demo.ini"))
     ordinary = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert [r.revision for r in ordinary.walk_revisions()] == ["c7d3e91024ab", "e8a4c2d190ab"] + [r.revision for r in demo.walk_revisions()]
-    assert len(list(demo.walk_revisions())) == 7
+    baseline = ["d6f2b8a931c0", "c4e8a17d92f6", "b7d2f90c4e61",
+                "a3c7e91b6d20", "ef14e8f62260", "df453131d3d8", "f9bc7a594a00"]
+    application = ["c3a7e9b120df", "b2d4e6f810ac", "f1a6b8c920de",
+                   "c7d3e91024ab", "e8a4c2d190ab"]
+    student = "e4b7c9d210af"
+    merge = "a9c2e4f610bd"
+    timing = "f6c1a8d420be"
+
+    # The demo catalog includes the additive student revision. Its deployment
+    # target remains an explicit baseline revision, not the catalog's head.
+    assert demo.get_heads() == [student]
+    assert [r.revision for r in demo.walk_revisions()] == [student] + baseline
+    assert ordinary.get_heads() == [timing]
+    assert ordinary.get_bases() == demo.get_bases() == [baseline[-1]]
+    revisions = list(ordinary.walk_revisions())
+    identifiers = [r.revision for r in revisions]
+    assert len(identifiers) == len(set(identifiers)) == 15
+    assert set(identifiers) == {timing, merge, student, *application, *baseline}
+    # Independent branches can be interleaved by Alembic. Require their exact
+    # internal ordering and every parent edge, without inventing an order
+    # between the student branch and the application branch.
+    assert [r for r in identifiers if r != student] == [timing, merge] + application + baseline
+    parents = dict(zip(baseline, baseline[1:] + [None]))
+    parents.update(zip(application, application[1:] + [baseline[0]]))
+    parents[student] = baseline[0]
+    parents[merge] = (application[0], student)
+    parents[timing] = merge
+    assert {r.revision: r.down_revision for r in revisions} == parents
+    assert identifiers.index(merge) < identifiers.index(student) < identifiers.index(baseline[0])
+    for revision in [student] + baseline:
+        assert Path(demo.get_revision(revision).path).resolve() == Path(ordinary.get_revision(revision).path).resolve()
 
 
 def test_caller_transaction_survives_success_and_failure():

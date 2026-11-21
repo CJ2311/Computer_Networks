@@ -7,10 +7,12 @@ from sqlalchemy import inspect, text
 from backend.app.base import Base
 from scripts import deploy_nfc_demo as baseline
 
-HEAD="c7d3e91024ab"
-PREVIOUS_REVISIONS={"e8a4c2d190ab"}
-TABLES={"external_identities","equipment_loan_policies","loan_destinations","quantity_loans","stock_ledger","overdue_reminders","missing_equipment_incidents","missing_equipment_events"}
-FUNCTIONS={"stock_history_protect","stock_change_capture","operations_no_delete","quantity_loan_guard","quantity_ledger_consistency"}
+HEAD="f6c1a8d420be"
+PREVIOUS_REVISIONS={"e8a4c2d190ab", "c7d3e91024ab", "f1a6b8c920de", "b2d4e6f810ac", "c3a7e9b120df", "a9c2e4f610bd"}
+SCANNER_TABLES={"equipment_scanners","scanner_scan_events","student_nfc_cards"}
+TABLES={"external_identities","equipment_loan_policies","loan_destinations","quantity_loans","stock_ledger","overdue_reminders","missing_equipment_incidents","missing_equipment_events"}|SCANNER_TABLES
+FUNCTIONS={"stock_history_protect","stock_change_capture","operations_no_delete","quantity_loan_guard","quantity_ledger_consistency",
+           "checkout_history_guard","missing_incident_history_guard"}
 OWNER="inventory_metadata_audit_owner"
 
 
@@ -24,6 +26,8 @@ def verify_application(c,settings):
         raise RuntimeError("Unexpected application revision")
     for table in TABLES|{"equipment_stock"}:
         allowed={"SELECT"} | ({"INSERT","UPDATE"} if table in {"equipment_loan_policies","overdue_reminders","equipment_stock","quantity_loans","missing_equipment_incidents"} else {"INSERT"} if table in {"loan_destinations","missing_equipment_events"} else set())
+        if table in SCANNER_TABLES:
+            allowed=set()  # Private staging is accessible only through guarded routines.
         row=c.execute(text("""SELECT pg_get_userbyid(relowner),relowner FROM pg_class WHERE oid=CAST(:table AS regclass)"""),dict(table=f"{q}.{table}")).one()
         if row[0]!=OWNER:
             raise RuntimeError("Unexpected application object owner")
@@ -53,7 +57,7 @@ def verify_application(c,settings):
         OR has_table_privilege('inventory_app',:users,'DELETE,TRUNCATE,TRIGGER')
         OR EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
             WHERE n.nspname=:schema AND c.relkind='r' AND pg_get_userbyid(c.relowner)<>
-                CASE WHEN c.relname IN ('external_identities','equipment_loan_policies','loan_destinations','quantity_loans','stock_ledger','overdue_reminders','equipment_stock','metadata_audit_events','missing_equipment_incidents','missing_equipment_events')
+                CASE WHEN c.relname IN ('external_identities','equipment_loan_policies','loan_destinations','quantity_loans','stock_ledger','overdue_reminders','equipment_stock','metadata_audit_events','missing_equipment_incidents','missing_equipment_events','equipment_scanners','scanner_scan_events','student_nfc_cards')
                      THEN 'inventory_metadata_audit_owner' ELSE 'inventory_migrator' END)
         OR EXISTS(SELECT 1 FROM pg_database WHERE datname=current_database()
             AND pg_get_userbyid(datdba) IN ('inventory_app','inventory_metadata_audit_writer'))
@@ -66,7 +70,10 @@ def verify_application(c,settings):
     known={"maintenance_history_no_rewrite","maintenance_request_guard","maintenance_asset_hold_guard","checkout_identifier_snapshots",
            "metadata_audit_protect","metadata_audit_equipment_change","metadata_audit_asset_change",
            "inventory_audit_parent_guard","inventory_audit_child_guard","inventory_audit_no_rewrite"}|FUNCTIONS
-    if {(r[0],r[1],r[2]) for r in routines}!={(name,0,True) for name in known}:
+    expected_routines = {(name,0,True) for name in known} | {("borrower_resolve_or_create",4,False)}
+    expected_routines |= {("scanner_ingest",6,False),("scanner_read_events",5,False)}
+    expected_routines |= {("student_nfc_manage",4,False)}
+    if {(r[0],r[1],r[2]) for r in routines}!=expected_routines:
         raise RuntimeError("Unexpected application routine catalog")
     for table in baseline.expected_tables(baseline.HEAD):
         if table.startswith("inventory_audit"):
@@ -84,6 +91,7 @@ def verify_application(c,settings):
         ("maintenance_events","maintenance_event_no_truncate"):34,
         ("equipment_assets","maintenance_asset_hold_validate"):19,
         ("equipment_checkouts","checkout_identifier_snapshots"):23,
+        ("equipment_checkouts","checkout_history_guard"):19,
         ("metadata_audit_events","metadata_audit_no_rewrite"):31,
         ("metadata_audit_events","metadata_audit_no_truncate"):34,
         ("equipment","metadata_audit_equipment_change"):17,
@@ -99,6 +107,7 @@ def verify_application(c,settings):
         ("quantity_loans","quantity_ledger_consistent"):21,
         ("missing_equipment_incidents","missing_incident_no_delete"):11,
         ("missing_equipment_incidents","missing_incident_no_truncate"):34,
+        ("missing_equipment_incidents","missing_incident_history_guard"):19,
         ("missing_equipment_events","missing_event_no_delete"):11,
         ("missing_equipment_events","missing_event_no_truncate"):34,
         ("missing_equipment_events","missing_event_no_update"):19,
@@ -149,6 +158,28 @@ def verify_application(c,settings):
             FROM pg_proc p WHERE oid=CAST(:name AS regprocedure)"""),dict(owner=OWNER,definer=name=='stock_change_capture',name=f"{q}.{name}()"))
         if unsafe is not False:
             raise RuntimeError("Unsafe application function")
+    _verify_history_protection(c, q)
+    from backend.alembic.borrower_safety import verify_borrower_creation
+    verify_borrower_creation(c, q)
+    from backend.alembic.scanner_safety import verify_scanner_staging
+    verify_scanner_staging(c, q)
+    from backend.alembic.student_nfc_safety import verify_student_nfc
+    verify_student_nfc(c, q)
+
+
+def _verify_history_protection(c, schema):
+    unsafe = c.scalar(text("""SELECT has_table_privilege('inventory_app', :table,
+        'DELETE,TRUNCATE,TRIGGER')"""), dict(table=f"{schema}.equipment_checkouts"))
+    if unsafe is not False:
+        raise RuntimeError("Unsafe checkout history privileges")
+    migration = import_module("backend.alembic.application_versions.f1a6b8c920de_history_guards")
+    for name, body in migration.guard_bodies(schema).items():
+        unsafe = c.scalar(text("""SELECT p.prosrc<>:body OR p.prokind<>'f'
+            OR p.prolang<>(SELECT oid FROM pg_language WHERE lanname='plpgsql')
+            FROM pg_proc p WHERE oid=CAST(:name AS regprocedure)"""),
+            dict(body=body, name=f"{schema}.{name}()"))
+        if unsafe is not False:
+            raise RuntimeError("Altered historical inventory protection function")
 
 
 def apply_application(c,settings):

@@ -53,5 +53,12 @@ loopback client. Never expose that mode through a proxy. College-mode failures c
 Staff policies remain laboratory-wide. No Lab/StaffLabMembership/Equipment.lab_id relation exists; location text is not
 an authorization boundary. Assigned-lab enforcement requires an agreed lab model and roster/membership source, followed
 by consistent filtering of every asset, loan, maintenance and audit operation. Do not deploy this as multi-lab isolation.
-Students can read equipment and only their own individual/quantity borrowing histories. Staff-only lookup endpoints
-expose active students' ID/college ID/name, without email. Frontend visibility never replaces backend authorization.
+Only active FACULTY and LAB_ASSISTANT identities may authenticate, in every mode. STUDENT and ADMIN
+identities are denied even when college mappings or configured bearer tokens exist. Development mode accepts
+only DEV-FACULTY and DEV-ASSISTANT. Local persisted roles remain authoritative; provider role claims do not
+grant application access. Faculty-only operations remain unavailable to lab assistants.
+
+STUDENT rows remain active borrower identity records with unchanged UUIDs and loan references. They are not
+login identities; do not delete or deactivate them to enforce access policy. Staff-only lookup endpoints expose
+active borrowers' ID/college ID/name without email. Equipment, stock, lending policy and borrowing histories
+are staff-only. Public liveness endpoints are unchanged. Frontend visibility never replaces backend authorization.

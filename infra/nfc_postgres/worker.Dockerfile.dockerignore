@@ -2,6 +2,9 @@
 !backend/
 !backend/app/
 !backend/app/base.py
+!backend/app/auth/
+!backend/app/auth/scanners.py
+!backend/app/auth/student_nfc.py
 !backend/app/models/
 !backend/app/models/*.py
 !backend/alembic/
@@ -13,6 +16,7 @@
 !alembic_nfc_demo.ini
 !scripts/
 !scripts/deploy_nfc_demo.py
+!scripts/provision_equipment_scanner.py
 !infra/
 !infra/nfc_postgres/
 !infra/nfc_postgres/*.py
@@ -27,6 +31,9 @@
 !backend/alembic/application_versions/
 !backend/alembic/application_versions/*.py
 !backend/alembic/application_safety.py
+!backend/alembic/borrower_safety.py
+!backend/alembic/scanner_safety.py
+!backend/alembic/student_nfc_safety.py
 !alembic_nfc_application.ini
 **/__pycache__/
 **/.pytest_cache/

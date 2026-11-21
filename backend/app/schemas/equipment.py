@@ -30,7 +30,7 @@ class _EquipmentMetadata(BaseModel):
 
     manufacturer: str | None = Field(default=None, max_length=100)
     model_number: str | None = Field(default=None, max_length=100)
-    description: str | None = None
+    description: str | None = Field(default=None, max_length=4000)
 
     purchase_price: Decimal | None = Field(
         default=None,

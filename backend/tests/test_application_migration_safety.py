@@ -60,10 +60,10 @@ def test_apply_application_from_baseline_success(migration_harness):
     migration_harness["verify"].assert_called_once_with(c, migration_harness["settings"])
 
 
-def test_apply_application_from_previous_revision_success(migration_harness):
+@pytest.mark.parametrize("prev_rev", sorted(PREVIOUS_REVISIONS))
+def test_apply_application_from_previous_revision_success(migration_harness, prev_rev):
     c = migration_harness["connection"]
-    prev_rev = list(PREVIOUS_REVISIONS)[0]
-    # Database is at intermediate approved revision e8a4c2d190ab
+    # Each previously deployed application revision remains upgradeable.
     c.execute.return_value.scalars.return_value.all.return_value = [prev_rev]
 
     apply_application(c, migration_harness["settings"])
@@ -77,7 +77,7 @@ def test_apply_application_from_previous_revision_success(migration_harness):
 
 def test_apply_application_idempotent_at_head(migration_harness):
     c = migration_harness["connection"]
-    # Database is already at HEAD c7d3e91024ab
+    # Database is already at the current application head.
     c.execute.return_value.scalars.return_value.all.return_value = [HEAD]
 
     apply_application(c, migration_harness["settings"])

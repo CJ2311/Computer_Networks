@@ -89,6 +89,40 @@ def test_images_and_build_context_are_explicit():
     assert "set -x" not in bootstrap
 
 
+@pytest.mark.parametrize("module", [
+    "backend/app/auth/scanners.py",
+    "backend/app/auth/student_nfc.py",
+    "backend/alembic/borrower_safety.py",
+    "backend/alembic/scanner_safety.py",
+    "backend/alembic/student_nfc_safety.py",
+    "scripts/provision_equipment_scanner.py",
+])
+def test_worker_required_modules_are_copied_and_included_in_build_context(module):
+    # Read manifests only: never import integration tests, build an image or run
+    # Docker. Both COPY coverage and parent/file allowlisting are required.
+    import shlex
+
+    dockerfile = (INFRA / "worker.Dockerfile").read_text()
+    ignore = (INFRA / "worker.Dockerfile.dockerignore").read_text().splitlines()
+    path = Path(module)
+    assert (ROOT / path).is_file()
+    assert "!" + path.as_posix() in ignore
+    for parent in path.parents:
+        if parent != Path("."):
+            assert "!" + parent.as_posix() + "/" in ignore
+    copies = [shlex.split(line)[1:] for line in dockerfile.splitlines() if line.startswith("COPY ")]
+    covered = False
+    for source, destination in copies:
+        source_path = Path(source)
+        if path == source_path:
+            covered |= Path(destination) == path
+        elif (ROOT / source_path).is_dir() and path.is_relative_to(source_path):
+            covered |= Path(destination) / path.relative_to(source_path) == path
+    assert covered, f"Required worker module is not copied: {module}"
+    # Keep the final secret/cache exclusions authoritative after all inclusions.
+    assert ignore.index("**/.env*") > ignore.index("!" + path.as_posix())
+
+
 def test_no_opt_in_never_reads_secrets_or_connects(monkeypatch):
     monkeypatch.delenv("NFC_DISPOSABLE_OPT_IN", raising=False)
     connect = Mock(side_effect=AssertionError("No live connections"))

@@ -54,17 +54,18 @@ from backend.app.auth.dependencies import get_current_user
 from backend.app.models.user import User
 
 
-def test_get_current_dev_admin():
+@pytest.mark.parametrize("identity,role", [("DEV-FACULTY", "FACULTY"), ("DEV-ASSISTANT", "LAB_ASSISTANT")])
+def test_get_current_dev_staff(identity, role):
     request = Mock()
     request.client.host = "127.0.0.1"
 
     db = Mock()
-    db.scalar.return_value = User(college_id="DEV-ADMIN", role="ADMIN", is_active=True)
+    db.scalar.return_value = User(college_id=identity, role=role, is_active=True)
     with patch("backend.app.auth.dependencies.is_dev_auth_enabled", return_value=True):
-        user = get_current_user(request=request, x_dev_user="DEV-ADMIN", db=db)
+        user = get_current_user(request=request, x_dev_user=identity, db=db)
 
-    assert user.college_id == "DEV-ADMIN"
-    assert user.role == "ADMIN"
+    assert user.college_id == identity
+    assert user.role == role
     assert user.is_active is True
     db.scalar.assert_called_once()
 
@@ -73,6 +74,8 @@ def test_get_current_dev_admin():
     [
         None,
         "DEV-UNKNOWN",
+        "DEV-STUDENT",
+        "DEV-ADMIN",
         "CB.EN.U4CSE12345",
     ],
 )
@@ -95,7 +98,8 @@ def test_inactive_dev_user():
     mock_db = Mock()
 
     inactive_user = Mock()
-    inactive_user.college_id = "DEV-STUDENT"
+    inactive_user.college_id = "DEV-FACULTY"
+    inactive_user.role = "FACULTY"
     inactive_user.is_active = False
 
     mock_db.scalar.return_value = inactive_user
@@ -107,7 +111,7 @@ def test_inactive_dev_user():
         with pytest.raises(HTTPException) as error:
             get_current_user(
                 request=request,
-                x_dev_user="DEV-STUDENT",
+                x_dev_user="DEV-FACULTY",
                 db=mock_db,
             )
 

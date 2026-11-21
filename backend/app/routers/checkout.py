@@ -54,7 +54,7 @@ def borrowing_history(
     filters: Annotated[HistoryFilters, Query()],
     db: Session = Depends(get_db),
     authorized_user: User = Depends(require_roles(
-        UserRole.STUDENT, UserRole.FACULTY, UserRole.LAB_ASSISTANT, UserRole.ADMIN,
+        UserRole.FACULTY, UserRole.LAB_ASSISTANT,
     )),
 ):
     return list_borrowing_history(db, authorized_user, filters)
@@ -65,7 +65,7 @@ def borrowing_history_detail(
     checkout_id: UUID,
     db: Session = Depends(get_db),
     authorized_user: User = Depends(require_roles(
-        UserRole.STUDENT, UserRole.FACULTY, UserRole.LAB_ASSISTANT, UserRole.ADMIN,
+        UserRole.FACULTY, UserRole.LAB_ASSISTANT,
     )),
 ):
     return get_borrowing_history(db, authorized_user, checkout_id)

@@ -57,3 +57,8 @@ Thumbs.db
 build/
 dist/
 *.egg-info/
+
+# Local ESP32 credentials
+/arduino/sketch_nov19a/scanner_config.local.h
+
+.venv312/

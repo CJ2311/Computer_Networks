@@ -1,1 +1,8 @@
 Generic single-database configuration.
+
+Current application migration head: f6c1a8d420be. The version graph spans
+versions/ and application_versions/. The staged demo runner stays pinned to
+d6f2b8a931c0; use the guarded application runner for extensions, not a generic
+upgrade-head command. See docs/backend/DEPLOYMENT.md and
+docs/backend/BACKEND_HANDOVER.md
+from the repository root for approved setup and database safety requirements.

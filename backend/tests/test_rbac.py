@@ -10,7 +10,7 @@ from backend.app.models.user import UserRole
 @pytest.mark.parametrize(
     "user_role, expected_status",
     [
-        ("ADMIN", None),
+        ("ADMIN", 403),
         ("FACULTY", None),
         ("LAB_ASSISTANT", 403),
         ("STUDENT", 403),
@@ -20,6 +20,7 @@ def test_role_permissions(user_role, expected_status):
     # Create a fictional user
     user = Mock()
     user.role = user_role
+    user.is_active = True
 
     # Allow only Admin and Faculty
     check_role = require_roles(

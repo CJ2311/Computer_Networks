@@ -14,6 +14,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 from alembic.config import Config
 from alembic import command
+from alembic.script import ScriptDirectory
 
 from backend.alembic.application_safety import apply_application, verify_application, HEAD, PREVIOUS_REVISIONS
 from backend.app.models.user import User
@@ -112,7 +113,7 @@ def test_phase_b_baseline_migrations_and_head(database):
 
 
 def test_phase_b_incremental_upgrade_from_previous_to_head(database):
-    """Verify incremental upgrade from e8a4c2d190ab to c7d3e91024ab."""
+    """Verify incremental upgrade from e8a4c2d190ab to the current application head."""
     database.deploy()
     # Step 1: Upgrade from baseline to predecessor application revision e8a4c2d190ab
     prev_rev = "e8a4c2d190ab"
@@ -129,7 +130,7 @@ def test_phase_b_incremental_upgrade_from_previous_to_head(database):
         rev = c.scalar(text("SELECT version_num FROM alembic_version"))
         assert rev == prev_rev
 
-    # Step 3: Run apply_application and confirm it upgrades cleanly to HEAD c7d3e91024ab
+    # Step 3: Run apply_application through the full chain to the current HEAD.
     with database.engine(ADMIN).connect() as c:
         database.verify_engine_identity(c)
         c.rollback()
@@ -140,7 +141,7 @@ def test_phase_b_incremental_upgrade_from_previous_to_head(database):
         database.verify_engine_identity(c)
         rev = c.scalar(text("SELECT version_num FROM alembic_version"))
         assert rev == HEAD
-        assert rev == "c7d3e91024ab"
+        assert rev == ScriptDirectory.from_config(config).get_current_head()
         verify_application(c, database.settings)
 
 

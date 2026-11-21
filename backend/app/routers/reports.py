@@ -54,7 +54,7 @@ def overview_report(
     response_model=CategoryReportResponse,
 )
 def categories_report(
-    category: str | None = Query(default=None),
+    category: str | None = Query(default=None, max_length=100),
     db: Session = Depends(get_db),
     _actor=Depends(staff_only),
 ):
@@ -69,8 +69,8 @@ def categories_report(
 )
 def stock_report(
     out_of_stock_only: bool = Query(default=False),
-    category: str | None = Query(default=None),
-    search: str | None = Query(default=None),
+    category: str | None = Query(default=None, max_length=100),
+    search: str | None = Query(default=None, max_length=100),
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0, lt=2**63),
     db: Session = Depends(get_db),
@@ -95,7 +95,7 @@ def stock_report(
 )
 def missing_report(
     status: Literal["OPEN", "RECONCILED", "ALL"] = Query(default="OPEN"),
-    category: str | None = Query(default=None),
+    category: str | None = Query(default=None, max_length=100),
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0, lt=2**63),
     db: Session = Depends(get_db),

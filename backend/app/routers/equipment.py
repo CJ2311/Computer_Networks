@@ -30,7 +30,7 @@ def list_equipment(
     db: Session = Depends(get_db),
     limit: int = Query(default=100, ge=1, le=100),
     offset: int = Query(default=0, ge=0, lt=2**63),
-    _authorized_user=Depends(require_roles(*UserRole)),
+    _authorized_user=Depends(require_roles(UserRole.FACULTY, UserRole.LAB_ASSISTANT)),
 ):
     """Retrieve registered equipment definitions."""
 
@@ -48,7 +48,7 @@ def list_equipment(
 def get_equipment(
     equipment_id: UUID,
     db: Session = Depends(get_db),
-    _authorized_user=Depends(require_roles(*UserRole)),
+    _authorized_user=Depends(require_roles(UserRole.FACULTY, UserRole.LAB_ASSISTANT)),
 ):
     """Retrieve a specific equipment definition by its UUID."""
 
@@ -93,7 +93,7 @@ def patch_equipment(
 @router.get("/{equipment_id}/stock", response_model=StockResponse)
 def quantity_stock(
     equipment_id: UUID, db: Session = Depends(get_db),
-    actor=Depends(require_roles(*UserRole)),
+    actor=Depends(require_roles(UserRole.FACULTY, UserRole.LAB_ASSISTANT)),
 ):
     return get_stock(db, equipment_id)
 

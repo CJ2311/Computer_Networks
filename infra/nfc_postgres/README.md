@@ -1,10 +1,11 @@
 # Disposable PostgreSQL tests for the NFC deployment runner
 
-Implementation only. Do not execute the commands below until separately approved.
-Docker CLI was not found during implementation; the daemon and image availability
-were not checked. No containers, volumes, PostgreSQL connections or integration
-tests were started. PostgreSQL 18.4 is intentionally exact: never replace a failed
-image pull with latest or point this harness at the existing server.
+Final isolated verification passed: **312 passed, 0 failed, 0 skipped, exit code 0**,
+as supplied by the project owner. Fresh/populated upgrades through `f6c1a8d420be`
+and cleanup succeeded; protected host databases were untouched.
+Execute the launcher again only after separate authorization.
+PostgreSQL 18.4 is intentionally exact: never replace a failed image pull with
+latest or point this harness at an existing server.
 
 ## Prerequisites
 
@@ -110,25 +111,44 @@ project rather than reusing credentials against fresh tmpfs data.
 
 ## Proposed commands for later approved execution (PowerShell)
 
-Use a fresh project name and retain it until cleanup. The value below contains
-no credential. Do not reuse another application's Compose project name.
+Use the reviewed launcher from the repository root, after explicit authorization:
 
 ```powershell
-$env:NFC_DISPOSABLE_OPT_IN = 'YES_ISOLATED_PG18'
-$nfcTestProject = 'nfc-it-' + [guid]::NewGuid().ToString('N')
-$nfcTestContext = docker context show
-if ($LASTEXITCODE -ne 0) { throw 'Docker context lookup failed' }
-docker compose --env-file infra/nfc_postgres/compose.defaults -p $nfcTestProject -f infra/nfc_postgres/compose.yaml config --quiet
-docker compose --env-file infra/nfc_postgres/compose.defaults -p $nfcTestProject -f infra/nfc_postgres/compose.yaml build
-docker compose --env-file infra/nfc_postgres/compose.defaults -p $nfcTestProject -f infra/nfc_postgres/compose.yaml up --abort-on-container-exit --exit-code-from worker
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_disposable_docker_tests.ps1 -BuildTimeoutSeconds 900 -TestTimeoutSeconds 1800 -CleanupTimeoutSeconds 120
 ```
 
-The worker bootstraps fresh roles, resets only its marked disposable database
-between tests, and runs infra/nfc_postgres/tests. No production runner flags are
-added. All migration execution uses the dedicated demo environment and unchanged
-seven revisions. Successful output is JSON with passed/failed/skipped counts and
-an exit code. A collection/setup failure can yield a nonzero exit code even if
-failed=0. Do not infer success without checking exit_code and skipped counts.
+The launcher requires the project `.venv` (including PyYAML). It pins the selected
+Docker context, generates a unique project, ignores ambient Compose/backend/libpq
+settings, and validates the exact reviewed Compose isolation contract. It creates
+STOPPED containers and inspects their ports, mounts, namespace sharing, identity
+volume options and ownership labels before starting PostgreSQL. No Docker command
+is issued by importing the runner. There is no host PostgreSQL fallback.
+
+Build, test execution, resource inspection and cleanup have external process
+timeouts. A timed-out command tree is terminated; tests are not retried. After
+create or up failures, finally-cleanup checks ownership before project-scoped
+`down --volumes` and verifies removal. Unexpected ownership or failed inspection
+aborts cleanup rather than risking unrelated resources: retain the printed
+project/context for trusted operator review. Build images/cache remain intentionally.
+Cleanup confirmation must be present before declaring disposable resources removed.
+An unavailable Docker engine fails closed before any database can start.
+
+The worker runs ONLY `infra/nfc_postgres/tests`, not the legacy backend integration
+fixtures that may target protected host databases. Its demo deployment stays pinned
+to `d6f2b8a931c0`; application fixtures separately apply the full merged chain through
+`a9c2e4f610bd` to current head `f6c1a8d420be`. Migrations run only in the disposable
+cluster using its randomly generated controller credentials and instance checks.
+Successful sanitized JSON must have a zero exit code, positive passed count and
+zero failed/skipped counts. Never infer success from passed count alone.
+
+Verified coverage includes fresh application migrations; populated upgrades from
+older revisions and specifically `a9c2e4f610bd`; byte-for-byte borrower, checkout and
+pending student NFC preservation; verification/replay/expiry-after-lock; scanner
+credentials, grants and capture ownership; checkout/return and stock concurrency;
+F1 history guards; maintenance through independent verification and corresponding
+reports; transaction rollback, deployment locks and catalog tampering. The
+handover tests passed in the final isolated verification. Database-free tests prove
+orchestration with mocked Docker, not actual daemon/runtime behavior.
 
 ## Test coverage
 
@@ -164,7 +184,7 @@ server handoff. Temporary initialization processes still handle these secrets;
 trusted Docker administrators can inspect their memory and the identity volume.
 Rebuild the PostgreSQL image to incorporate bootstrap changes. Use a fresh
 identity volume for any later authorized runtime test; partial credentials now
-also fail reuse checks. These changes have not been runtime-validated with Docker.
+also fail reuse checks. These bootstrap changes are covered by the completed isolated verification described below.
 
 - Full staged API deployment and verify-only rerun, plus an unchanged interactive
   CLI deployment through a pseudo-terminal. Passwords are fed only via hidden
@@ -191,7 +211,7 @@ The ambiguous-commit case is deterministic client-boundary fault injection. It
 is not a test of packets lost in transit, SSL, network partition timing, server
 crash recovery or host failure. Those require a separate authorized fault-injection
 VM/network setup; none is claimed here. The worker may find previously unknown
-reflection/ACL/ownership conflicts: these integration tests have NOT been run.
+reflection/ACL/ownership conflicts: the completed final isolated run passed as recorded below.
 
 ## Cleanup limited to this project
 
@@ -271,3 +291,7 @@ build, and application database.py/.env/host credentials are still excluded from
 Failure output remains structured and allowlisted: test identifier, phase, fixed reason where available, SQLSTATE and
 repository filename/line references. Exception strings, SQL, captured output, parameters and credentials are withheld.
 See `docs/backend/DEPLOYMENT.md` for production permissions and remaining operational limits.
+
+## Final handover verification
+
+Project-owner supplied result: **312 passed, 0 failed, 0 skipped, exit code 0**. Fresh migrations through `f6c1a8d420be`, populated upgrades, NFC, scanner security, lending, inventory, maintenance, reporting and concurrency passed. Disposable containers, volumes and networks were cleaned up successfully; protected host databases were untouched. This supersedes historical pending-run notes above. No Docker or PostgreSQL was run for handover. Host runner output uses explicit UTF-8 with replacement on both captured streams; timeout, isolation and scoped cleanup behavior are unchanged. See [handover](../../docs/backend/BACKEND_HANDOVER.md).

@@ -85,19 +85,20 @@ def test_stock_ledger_is_atomic_immutable_and_context_required(application):
                 connection.exec_driver_sql(statement)
 
 
-def test_quantity_issue_return_retry_history_and_student_scope(application):
+def test_quantity_issue_return_retry_history_and_borrower_filter(application):
     c=application;data=issue_data(c)
     for _ in range(2):
         with Session(c.engine) as db:
             issued=loans.issue_quantity(db,data,c.staff)
             assert issued.quantity==3
     with Session(c.engine) as db:
-        assert len(loans.list_quantity(db,c.student)["items"])==1
+        assert len(loans.list_quantity(db,c.staff,student_id=c.student.id)["items"])==1
     with Session(c.engine) as db:
-        assert not loans.list_quantity(db,c.other)["items"]
+        assert not loans.list_quantity(db,c.staff,student_id=c.other.id)["items"]
         with pytest.raises(HTTPException) as error:
             loans.list_quantity(db,c.other,loan_id=data.idempotency_key)
-        assert error.value.status_code==404
+        assert error.value.status_code==403
+        assert db.get(User,c.student.id).is_active
     returned=QuantityReturnCreate(idempotency_key=uuid4(),condition_status="WORKING")
     for _ in range(2):
         with Session(c.engine) as db:

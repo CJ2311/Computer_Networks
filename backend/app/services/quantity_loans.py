@@ -109,14 +109,10 @@ def list_quantity(
     if status is not None and status not in ("BORROWED", "RETURNED"):
         raise HTTPException(422, "Invalid status filter")
     with db.no_autoflush:
-        user=_authorize(db,actor,{"ADMIN","FACULTY","LAB_ASSISTANT","STUDENT"})
+        _authorize(db,actor,{"FACULTY","LAB_ASSISTANT"})
         now=_now(db)
         stmt=select(QuantityLoan)
-        if user.role=="STUDENT":
-            if student_id is not None and student_id != user.id:
-                raise HTTPException(403, "Cannot filter another borrower's history")
-            stmt=stmt.where(QuantityLoan.student_id==user.id)
-        elif student_id is not None:
+        if student_id is not None:
             stmt=stmt.where(QuantityLoan.student_id==student_id)
         if equipment_id is not None:
             stmt=stmt.where(QuantityLoan.equipment_id==equipment_id)

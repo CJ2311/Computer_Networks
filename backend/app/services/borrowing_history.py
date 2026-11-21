@@ -13,15 +13,10 @@ from backend.app.schemas.borrowing_history import HistoryDetail, HistoryFilters,
 
 def _scope(user: User, student_id: UUID | None = None):
     allowed = {
-        UserRole.STUDENT.value, UserRole.FACULTY.value,
-        UserRole.LAB_ASSISTANT.value, UserRole.ADMIN.value,
+        UserRole.FACULTY.value, UserRole.LAB_ASSISTANT.value,
     }
     if not user.is_active or user.role not in allowed:
         raise HTTPException(status_code=403, detail="User is not authorized to view borrowing history")
-    if user.role == UserRole.STUDENT.value:
-        if student_id is not None and student_id != user.id:
-            raise HTTPException(status_code=403, detail="Cannot filter another borrower's history")
-        return [EquipmentCheckout.student_id == user.id]
     # Temporary laboratory-wide staff access: no assigned-lab scope exists yet.
     return [EquipmentCheckout.student_id == student_id] if student_id is not None else []
 
@@ -85,6 +80,5 @@ def get_borrowing_history(db: Session, user: User, checkout_id: UUID) -> History
             EquipmentCheckout.id == checkout_id, *predicates
         )).mappings().one_or_none()
         if row is None:
-            # Foreign student records and nonexistent IDs are indistinguishable.
             raise HTTPException(status_code=404, detail="Checkout not found")
         return HistoryDetail(**row, as_of=as_of)

@@ -8,6 +8,7 @@ from urllib.request import Request, build_opener, HTTPSHandler, HTTPRedirectHand
 import ssl
 
 from fastapi import HTTPException
+from backend.app.auth.introspection_limits import get_introspection_guard
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -15,7 +16,9 @@ class NoRedirect(HTTPRedirectHandler):
         raise ValueError("Introspection redirects are forbidden")
 
 
-def introspect(authorization: str | None) -> tuple[str, str]:
+def introspect(authorization: str | None, *, client_host: str | None = None) -> tuple[str, str]:
+    guard = get_introspection_guard()
+    guard.admit(client_host)
     keys = ("COLLEGE_INTROSPECTION_URL", "COLLEGE_ISSUER", "COLLEGE_AUDIENCE", "COLLEGE_CLIENT_ID", "COLLEGE_CLIENT_SECRET")
     values = [os.getenv(key, "") for key in keys]
     if not all(values):
@@ -39,14 +42,17 @@ def introspect(authorization: str | None) -> tuple[str, str]:
     request = Request(endpoint, data=urlencode({"token": parts[1], "token_type_hint": "access_token"}).encode(),
                       headers={"Authorization": "Basic " + credentials, "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"}, method="POST")
     try:
-        opener = build_opener(HTTPSHandler(context=ssl.create_default_context()), NoRedirect())
-        with opener.open(request, timeout=5) as response:
-            if response.status != 200:
-                raise ValueError("Invalid introspection status")
-            raw = response.read(16385)
-            if len(raw) > 16384:
-                raise ValueError("Oversized introspection response")
-            claims = json.loads(raw)
+        with guard.provider_slot():
+            opener = build_opener(HTTPSHandler(context=ssl.create_default_context()), NoRedirect())
+            with opener.open(request, timeout=guard.settings.timeout_seconds) as response:
+                if response.status != 200:
+                    raise ValueError("Invalid introspection status")
+                raw = response.read(16385)
+                if len(raw) > 16384:
+                    raise ValueError("Oversized introspection response")
+                claims = json.loads(raw)
+    except HTTPException:
+        raise
     except Exception:
         # Never render network errors: they may contain URLs, credentials or tokens.
         raise HTTPException(503, "College authentication provider is unavailable") from None

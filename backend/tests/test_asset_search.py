@@ -357,12 +357,16 @@ def test_unauthenticated_access_returns_401(client_factory):
     assert resp.status_code == 401
 
 
-@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.FACULTY, UserRole.LAB_ASSISTANT])
-def test_all_staff_roles_permitted(client_factory, role):
-    """Admin, Faculty, and Lab Assistant roles access GET /assets successfully."""
+@pytest.mark.parametrize("role, expected_status", [
+    (UserRole.ADMIN, 403),
+    (UserRole.FACULTY, 200),
+    (UserRole.LAB_ASSISTANT, 200),
+])
+def test_all_staff_roles_permitted(client_factory, role, expected_status):
+    """Faculty and lab assistants may browse assets; administrators are denied."""
     client = client_factory(role)
     resp = client.get("/assets")
-    assert resp.status_code == 200
+    assert resp.status_code == expected_status
 
 
 def test_existing_response_model_serialization(client_factory, mock_db):

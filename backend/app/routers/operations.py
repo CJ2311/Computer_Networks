@@ -9,13 +9,21 @@ from backend.app.models.user import UserRole
 from backend.app.models.operations import StockLedger, EquipmentLoanPolicy, LoanDestination
 from backend.app.models.equipment import Equipment
 from backend.app.schemas.operations import QuantityLoanCreate, QuantityReturnCreate, QuantityLoanResponse, QuantityLoanPage, LoanPolicyInput, LedgerResponse
+from backend.app.schemas.operations import LoanPolicyResponse, CheckoutDestinationResponse, StudentLookupResponse
 from backend.app.services.quantity_loans import issue_quantity, return_quantity, list_quantity, set_policy
 from backend.app.services.borrowing_history import get_borrowing_history
 from fastapi import HTTPException
+from backend.app.schemas.borrowers import BorrowerResolve, BorrowerResolveResponse
+from backend.app.services.borrowers import resolve_borrower, lookup_borrower
 
 router=APIRouter(tags=["Inventory operations"])
 staff=require_roles(UserRole.ADMIN,UserRole.FACULTY,UserRole.LAB_ASSISTANT)
-readers=require_roles(*UserRole)
+readers=require_roles(UserRole.FACULTY,UserRole.LAB_ASSISTANT)
+
+
+@router.post("/students/resolve", response_model=BorrowerResolveResponse)
+def resolve_student(data: BorrowerResolve, db=Depends(get_inventory_write_db), actor=Depends(readers)):
+    return resolve_borrower(db, data, actor)
 
 
 @router.post("/quantity-loans",response_model=QuantityLoanResponse,status_code=201)
@@ -61,12 +69,12 @@ def ledger(equipment_id: UUID,db=Depends(get_db),actor=Depends(staff),limit: int
     return db.scalars(select(StockLedger).where(StockLedger.equipment_id==equipment_id).order_by(StockLedger.revision).limit(limit).offset(offset)).all()
 
 
-@router.post("/equipment/{equipment_id}/loan-policy")
+@router.post("/equipment/{equipment_id}/loan-policy", response_model=LoanPolicyResponse)
 def policy(equipment_id: UUID,data: LoanPolicyInput,db=Depends(get_inventory_write_db),actor=Depends(require_roles(UserRole.ADMIN,UserRole.FACULTY))):
     return set_policy(db,equipment_id,data,actor)
 
 
-@router.get("/equipment/{equipment_id}/loan-policy")
+@router.get("/equipment/{equipment_id}/loan-policy", response_model=LoanPolicyResponse)
 def get_policy(equipment_id: UUID,db=Depends(get_db),actor=Depends(readers)):
     if db.get(Equipment,equipment_id) is None:
         raise HTTPException(404,"Equipment not found")
@@ -74,17 +82,14 @@ def get_policy(equipment_id: UUID,db=Depends(get_db),actor=Depends(readers)):
     return dict(equipment_id=equipment_id,allow_offsite=record.allow_offsite if record else False)
 
 
-@router.get("/checkouts/{checkout_id}/destination")
+@router.get("/checkouts/{checkout_id}/destination", response_model=CheckoutDestinationResponse)
 def destination(checkout_id: UUID,db=Depends(get_db),actor=Depends(readers)):
-    get_borrowing_history(db,actor,checkout_id)  # same non-disclosing student scope
+    get_borrowing_history(db,actor,checkout_id)  # same staff-only history authorization
     row=db.get(LoanDestination,checkout_id)
     return dict(checkout_id=checkout_id,destination=row.destination if row else None)
 
 
-@router.get("/students/lookup")
+@router.get("/students/lookup", response_model=StudentLookupResponse)
 def student_lookup(college_id: str=Query(min_length=1,max_length=50,pattern=r"^[^\x00]+$"),db=Depends(get_db),actor=Depends(staff)):
-    from backend.app.models.user import User
-    user=db.scalar(select(User).where(User.college_id==college_id.strip(),User.role=="STUDENT",User.is_active.is_(True)))
-    if user is None:
-        raise HTTPException(404,"Active student not found")
+    user=lookup_borrower(db,college_id)
     return dict(id=user.id,college_id=user.college_id,full_name=user.full_name)

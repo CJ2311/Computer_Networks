@@ -6,6 +6,8 @@ RUN groupadd --gid 18084 nfc-secrets \
     && groupadd --gid 18085 nfc-worker \
     && useradd --uid 18085 --gid 18085 --groups nfc-secrets --no-create-home --shell /usr/sbin/nologin nfc-worker
 COPY backend/app/base.py backend/app/base.py
+COPY backend/app/auth/scanners.py backend/app/auth/scanners.py
+COPY backend/app/auth/student_nfc.py backend/app/auth/student_nfc.py
 COPY backend/app/models backend/app/models
 COPY backend/app/services backend/app/services
 COPY backend/app/schemas backend/app/schemas
@@ -14,6 +16,7 @@ COPY backend/alembic_nfc_demo/env.py backend/alembic_nfc_demo/env.py
 COPY alembic_nfc_demo.ini alembic_nfc_demo.ini
 COPY alembic_nfc_application.ini alembic_nfc_application.ini
 COPY scripts/deploy_nfc_demo.py scripts/deploy_nfc_demo.py
+COPY scripts/provision_equipment_scanner.py scripts/provision_equipment_scanner.py
 COPY infra/nfc_postgres infra/nfc_postgres
 USER nfc-worker
 ENTRYPOINT ["python", "-B", "-m", "infra.nfc_postgres.worker"]

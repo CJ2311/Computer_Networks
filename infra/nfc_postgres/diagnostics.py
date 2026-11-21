@@ -16,6 +16,19 @@ FILES += [
     "infra/nfc_postgres/tests/test_inventory_reports.py",
     "infra/nfc_postgres/tests/test_asset_search.py",
     "infra/nfc_postgres/tests/test_quantity_loan_search.py",
+    "infra/nfc_postgres/tests/test_history_protection.py",
+    "infra/nfc_postgres/tests/test_borrower_registration.py",
+    "backend/app/services/borrowers.py",
+    "backend/alembic/borrower_safety.py",
+    "backend/alembic/scanner_safety.py",
+    "backend/app/services/scanners.py",
+    "infra/nfc_postgres/tests/test_scanner_ingestion.py",
+    "infra/nfc_postgres/tests/test_scanner_provisioning.py",
+    "scripts/provision_equipment_scanner.py",
+    "infra/nfc_postgres/tests/test_student_nfc.py",
+    "infra/nfc_postgres/tests/test_handover.py",
+    "backend/app/services/student_nfc.py",
+    "backend/alembic/student_nfc_safety.py",
 ]
 FILES += [str(p.relative_to(ROOT)).replace("\\", "/") for p in (ROOT / "backend/alembic/application_versions").glob("*.py")]
 SAFE_FILES = set(FILES)

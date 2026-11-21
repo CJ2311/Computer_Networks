@@ -13,7 +13,7 @@ import warnings
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import MetaData, create_engine, inspect, text
 from sqlalchemy.engine import URL
 from sqlalchemy.pool import NullPool
 
@@ -152,7 +152,7 @@ def checkpoint(connection, settings):
     """), {"schema": schema}):
         raise DeploymentError("Unexpected schema objects")
     for name in tables - {"alembic_version"}:
-        model = Base.metadata.tables[name]
+        model = checkpoint_model(name, revision)
         columns = inspector.get_columns(name, schema=schema)
         if {c["name"] for c in columns} != set(model.columns.keys()):
             raise DeploymentError("Table columns do not match deployment checkpoint")
@@ -185,6 +185,21 @@ def checkpoint(connection, settings):
             raise DeploymentError("Foreign key mismatch")
     validate_guards(connection, schema, revision)
     return revision
+
+
+def checkpoint_model(name, revision):
+    """Pin legacy users shape without mutating current application metadata."""
+    model = Base.metadata.tables[name]
+    if name == "users" and revision in {None, B7, C4, HEAD}:
+        model = model.to_metadata(MetaData())
+        model.c.email.nullable = False
+        for constraint in list(model.constraints):
+            if constraint.name == "ck_users_staff_email":
+                model.constraints.remove(constraint)
+        for index in list(model.indexes):
+            if index.name == "uq_users_registration_normalized":
+                model.indexes.remove(index)
+    return model
 
 
 def validate_guards(connection, schema, revision):
@@ -304,7 +319,14 @@ def demo_config(connection, settings, user):
     if Path(script.dir).resolve() != (ROOT / "backend/alembic_nfc_demo").resolve():
         raise DeploymentError("Dedicated demo environment required")
     if [r.revision for r in script.walk_revisions()] != [
-        HEAD, C4, B7, "a3c7e91b6d20", "ef14e8f62260", "df453131d3d8", "f9bc7a594a00"
+        "e4b7c9d210af",
+        HEAD,
+        C4,
+        B7,
+        "a3c7e91b6d20",
+        "ef14e8f62260",
+        "df453131d3d8",
+        "f9bc7a594a00",
     ]:
         raise DeploymentError("Unreviewed migration history")
     config.attributes.update(connection=connection, nfc_demo_identity=identity(settings, user))

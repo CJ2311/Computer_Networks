@@ -1,18 +1,18 @@
 """Database-free unit and API tests for quantity loan filtering."""
 
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from datetime import datetime, timezone, timedelta
 from unittest.mock import Mock
 from uuid import UUID, uuid4
 
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy.dialects import postgresql
 
 from backend.app.auth.dependencies import get_current_user
 from backend.app.database import get_db
-from backend.app.main import app
+from backend.app.routers.operations import router
 from backend.app.models.operations import QuantityLoan
 from backend.app.models.user import User, UserRole
 from backend.app.schemas.operations import QuantityLoanPage, QuantityLoanResponse
@@ -71,7 +71,11 @@ def assert_read_only_db(db: Mock):
 
 @pytest.fixture
 def client_factory(mock_db):
+    clients = ExitStack()
+
     def _create(role: UserRole | None = UserRole.FACULTY, user_id: UUID | None = None):
+        app = FastAPI()
+        app.include_router(router)
         user_uuid = user_id or uuid4()
         user = make_user(mock_db, role=role if role else UserRole.STUDENT, user_id=user_uuid)
 
@@ -85,12 +89,13 @@ def client_factory(mock_db):
 
         app.dependency_overrides[get_db] = override_db
         app.dependency_overrides[get_current_user] = override_user
-        client = TestClient(app, raise_server_exceptions=False)
+        clients.callback(app.dependency_overrides.clear)
+        client = clients.enter_context(TestClient(app, raise_server_exceptions=False))
         client._test_user = user
         return client
 
-    yield _create
-    app.dependency_overrides.clear()
+    with clients:
+        yield _create
 
 
 # ==============================================================================
@@ -124,16 +129,15 @@ def test_staff_filtering_by_student_id(mock_db):
     assert "quantity_loans.student_id =" in sql
 
 
-def test_student_filtering_by_own_student_id(mock_db):
-    """Scenario 3: Student filtering by their own student_id succeeds."""
+def test_student_filtering_by_own_student_id_is_denied(mock_db):
+    """Even a borrower's own UUID does not grant application access."""
     student_id = uuid4()
     student = make_user(mock_db, role=UserRole.STUDENT, user_id=student_id)
-    res = list_quantity(mock_db, student, student_id=student_id)
-
-    assert res["items"] == []
-    stmt = mock_db.scalars.call_args.args[0]
-    sql = compile_stmt(stmt)
-    assert "quantity_loans.student_id =" in sql
+    with pytest.raises(HTTPException) as exc:
+        list_quantity(mock_db, student, student_id=student_id)
+    assert exc.value.status_code == 403
+    mock_db.scalars.assert_not_called()
+    assert_read_only_db(mock_db)
 
 
 def test_student_filtering_by_another_student_id_returns_403(mock_db):
@@ -145,18 +149,18 @@ def test_student_filtering_by_another_student_id_returns_403(mock_db):
     with pytest.raises(HTTPException) as exc:
         list_quantity(mock_db, student, student_id=other_id)
     assert exc.value.status_code == 403
-    assert "Cannot filter another borrower's history" in exc.value.detail
+    mock_db.scalars.assert_not_called()
 
 
-def test_student_with_omitted_student_id_sees_only_own_records(mock_db):
-    """Scenario 5: Student omitting student_id automatically gets scoped to own student_id."""
+def test_student_with_omitted_student_id_is_denied(mock_db):
+    """Omitting the borrower filter cannot bypass staff-only history."""
     student_id = uuid4()
     student = make_user(mock_db, role=UserRole.STUDENT, user_id=student_id)
-    list_quantity(mock_db, student, student_id=None)
-
-    stmt = mock_db.scalars.call_args.args[0]
-    sql = compile_stmt(stmt)
-    assert "quantity_loans.student_id =" in sql
+    with pytest.raises(HTTPException) as exc:
+        list_quantity(mock_db, student, student_id=None)
+    assert exc.value.status_code == 403
+    mock_db.scalars.assert_not_called()
+    assert_read_only_db(mock_db)
 
 
 def test_equipment_id_filtering(mock_db):
@@ -173,7 +177,7 @@ def test_equipment_id_filtering(mock_db):
 
 def test_borrowed_status_filtering(mock_db):
     """Scenario 7: BORROWED status filters quantity_loans.returned_at IS NULL."""
-    staff = make_user(mock_db, role=UserRole.ADMIN)
+    staff = make_user(mock_db, role=UserRole.FACULTY)
     list_quantity(mock_db, staff, status="BORROWED")
 
     stmt = mock_db.scalars.call_args.args[0]
@@ -183,7 +187,7 @@ def test_borrowed_status_filtering(mock_db):
 
 def test_returned_status_filtering(mock_db):
     """Scenario 8: RETURNED status filters quantity_loans.returned_at IS NOT NULL."""
-    staff = make_user(mock_db, role=UserRole.ADMIN)
+    staff = make_user(mock_db, role=UserRole.FACULTY)
     list_quantity(mock_db, staff, status="RETURNED")
 
     stmt = mock_db.scalars.call_args.args[0]
@@ -222,7 +226,7 @@ def test_existing_overdue_false_behavior(mock_db):
 
 def test_combined_filters(mock_db):
     """Scenario 14: Combined independent filters are combined with AND semantics."""
-    staff = make_user(mock_db, role=UserRole.ADMIN)
+    staff = make_user(mock_db, role=UserRole.FACULTY)
     st_id = uuid4()
     eq_id = uuid4()
     list_quantity(mock_db, staff, student_id=st_id, equipment_id=eq_id, status="BORROWED", overdue=True)
@@ -339,7 +343,7 @@ def test_has_more_windowing(mock_db):
 
 
 def test_existing_loan_detail_authorization(mock_db):
-    """Scenario 20: Existing loan detail lookup respects student privacy and raises 404 for missing/unauthorized."""
+    """Scenario 20: Loan details reject nonstaff before reading custody records."""
     my_id = uuid4()
     loan_id = uuid4()
 
@@ -347,8 +351,8 @@ def test_existing_loan_detail_authorization(mock_db):
 
     with pytest.raises(HTTPException) as exc:
         list_quantity(mock_db, student, loan_id=loan_id)
-    assert exc.value.status_code == 404
-    assert exc.value.detail == "Quantity loan not found"
+    assert exc.value.status_code == 403
+    mock_db.scalars.assert_not_called()
 
 
 def test_read_only_execution(mock_db):
@@ -401,6 +405,9 @@ def test_all_authorized_staff_roles_retain_access(client_factory, role):
     """Scenario 24: All authorized staff roles retain 200 OK access."""
     client = client_factory(role)
     resp = client.get("/quantity-loans")
+    if role == UserRole.ADMIN:
+        assert resp.status_code == 403
+        return
     assert resp.status_code == 200
     assert resp.json() == {"items": [], "limit": 25, "offset": 0, "has_more": False}
 
@@ -433,12 +440,12 @@ def test_http_student_filtering_by_another_student_returns_403(client_factory):
     client = client_factory(UserRole.STUDENT, user_id=my_id)
     resp = client.get(f"/quantity-loans?student_id={other_id}")
     assert resp.status_code == 403
-    assert "Cannot filter another borrower's history" in resp.json()["detail"]
+    assert "restricted to authorized staff" in resp.json()["detail"]
 
 
-def test_http_student_filtering_by_own_id_returns_200(client_factory):
-    """Student caller receives 200 when passing own student UUID in query."""
+def test_http_student_filtering_by_own_id_returns_403(client_factory):
+    """Student caller cannot access history even using their own borrower UUID."""
     my_id = uuid4()
     client = client_factory(UserRole.STUDENT, user_id=my_id)
     resp = client.get(f"/quantity-loans?student_id={my_id}")
-    assert resp.status_code == 200
+    assert resp.status_code == 403

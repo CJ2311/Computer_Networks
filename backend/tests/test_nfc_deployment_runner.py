@@ -70,6 +70,38 @@ def test_stage_order_and_resume(rig, start, expected):
         assert call.args[2] == "synthetic-secret"
 
 
+@pytest.mark.parametrize("start,expected", [
+    (None, ["b7d2f90c4e61", "c4e8a17d92f6", "d6f2b8a931c0"]),
+    ("b7d2f90c4e61", ["c4e8a17d92f6", "d6f2b8a931c0"]),
+    ("c4e8a17d92f6", ["d6f2b8a931c0"]),
+    ("d6f2b8a931c0", []),
+])
+def test_demo_upgrade_targets_stay_pinned_despite_student_revision(rig, monkeypatch, start, expected):
+    from alembic.script import ScriptDirectory
+
+    assert runner.HEAD == "d6f2b8a931c0"
+    assert runner.STAGES == (
+        (None, "b7d2f90c4e61", runner.MIGRATOR),
+        ("b7d2f90c4e61", "c4e8a17d92f6", "administrator"),
+        ("c4e8a17d92f6", "d6f2b8a931c0", runner.MIGRATOR),
+    )
+    rig.state[0] = start
+    # Exercise the real run_stage and demo_config; mock only the Alembic write
+    # boundary and database inspection/connection objects supplied by rig.
+    monkeypatch.setattr(runner, "run_stage", rig.original_stage)
+    def upgrade(config, target):
+        assert config.attributes["connection"] is rig.connection
+        assert ScriptDirectory.from_config(config).get_current_head() == "e4b7c9d210af"
+        assert target in {"b7d2f90c4e61", "c4e8a17d92f6", "d6f2b8a931c0"}
+        assert target not in {"head", "heads", "e4b7c9d210af", "a9c2e4f610bd"}
+        rig.state[0] = target
+    commands = Mock(side_effect=upgrade)
+    monkeypatch.setattr(runner.command, "upgrade", commands)
+    runner.deploy(SETTINGS, rig.factory, lambda _: "synthetic-secret", lambda _: CONFIRM)
+    assert [call.args[1] for call in commands.call_args_list] == expected
+    assert rig.state[0] == "d6f2b8a931c0"
+
+
 @pytest.mark.parametrize("changes", [
     {"database": "inventory_db"}, {"database": "inventory_checkout_test"},
     {"database": ""}, {"server_address": ""}, {"server_address": "192.0.2.1"},
@@ -278,9 +310,11 @@ def test_consistent_schema_checkpoint(monkeypatch, revision):
     inspector.get_table_names.return_value = runner.expected_tables(revision)
     inspector.get_view_names.return_value = []
     inspector.get_columns.side_effect = lambda name, **k: [
-        dict(name=c.name, nullable=c.nullable, type=c.type) for c in runner.Base.metadata.tables[name].columns]
+        dict(name=c.name, nullable=False if name == "users" and c.name == "email" else c.nullable,
+             type=c.type) for c in runner.Base.metadata.tables[name].columns]
     inspector.get_check_constraints.side_effect = lambda name, **k: [
-        dict(name=c.name) for c in runner.Base.metadata.tables[name].constraints if c.__class__.__name__ == "CheckConstraint"]
+        dict(name=c.name) for c in runner.Base.metadata.tables[name].constraints
+        if c.__class__.__name__ == "CheckConstraint" and c.name != "ck_users_staff_email"]
     inspector.get_pk_constraint.side_effect = lambda name, **k: dict(constrained_columns=[c.name for c in runner.Base.metadata.tables[name].primary_key])
     inspector.get_indexes.side_effect = lambda name, **k: [dict(name=i.name) for i in runner.Base.metadata.tables[name].indexes]
     inspector.get_unique_constraints.side_effect = lambda name, **k: [

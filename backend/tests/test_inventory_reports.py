@@ -697,6 +697,12 @@ def test_reports_router_routes_enforce_staff_role_dependency(path):
     # Staff roles permitted
     for role in ("ADMIN", "FACULTY", "LAB_ASSISTANT"):
         user = User(id=uuid4(), role=role, is_active=True, college_id=f"DEV-{role}")
+        if role == "ADMIN":
+            from fastapi import HTTPException
+            with pytest.raises(HTTPException) as error:
+                check(current_user=user)
+            assert error.value.status_code == 403
+            continue
         assert check(current_user=user) is user
 
     # Student role rejected with 403 Forbidden
@@ -705,7 +711,7 @@ def test_reports_router_routes_enforce_staff_role_dependency(path):
     with pytest.raises(HTTPException) as exc:
         check(current_user=student)
     assert exc.value.status_code == 403
-    assert "permission" in exc.value.detail.lower()
+    assert exc.value.detail == "Application access is restricted to authorized staff"
 
 
 def test_overview_route_handler(mock_db):

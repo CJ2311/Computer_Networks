@@ -8,6 +8,18 @@ from backend.app.auth.tokens import token_identity, token_mode
 from backend.app.models.user import UserRole
 
 
+APPLICATION_ROLES = frozenset({UserRole.FACULTY.value, UserRole.LAB_ASSISTANT.value})
+
+
+def require_application_staff(user):
+    """Borrower/legacy administrator records never grant application access."""
+    if not user.is_active:
+        raise HTTPException(403, "User account is inactive")
+    if user.role not in APPLICATION_ROLES:
+        raise HTTPException(403, "Application access is restricted to authorized staff")
+    return user
+
+
 def require_local_dev_auth(request: Request) -> None:
     """Restrict development authentication to local requests."""
 
@@ -55,13 +67,13 @@ def get_current_user(
             raise HTTPException(401, "Development identity cannot be combined with college authentication")
         from backend.app.auth.college import introspect
         from backend.app.models.operations import ExternalIdentity
-        issuer, subject = introspect(authorization)
+        issuer, subject = introspect(authorization, client_host=request.client.host if request.client else None)
         user = db.scalar(select(User).join(ExternalIdentity, ExternalIdentity.user_id == User.id).where(
             ExternalIdentity.issuer == issuer, ExternalIdentity.subject == subject
         ).execution_options(populate_existing=True))
         if user is None or not user.is_active:
             raise HTTPException(403, "College identity is not provisioned or is inactive")
-        return user
+        return require_application_staff(user)
 
     if token_mode():
         if x_dev_user:
@@ -72,7 +84,7 @@ def get_current_user(
             raise HTTPException(401, "Invalid credentials", headers={"WWW-Authenticate": "Bearer"})
         if not user.is_active:
             raise HTTPException(403, "User account is inactive")
-        return user
+        return require_application_staff(user)
 
     # Supplying a bearer token never silently falls back to development identity.
     if authorization is not None:
@@ -86,10 +98,8 @@ def get_current_user(
         )
 
     allowed_test_users = {
-    "DEV-ADMIN",
     "DEV-FACULTY",
     "DEV-ASSISTANT",
-    "DEV-STUDENT",
 }
 
     if x_dev_user not in allowed_test_users:
@@ -114,7 +124,7 @@ def get_current_user(
             detail="User account is inactive",
         )
 
-    return user
+    return require_application_staff(user)
 
 from collections.abc import Callable
 from fastapi import Depends
@@ -127,6 +137,7 @@ def require_roles(*allowed_roles: UserRole) -> Callable:
         current_user: User = Depends(get_current_user),
     ) -> User:
 
+        require_application_staff(current_user)
         if current_user.role not in {
             role.value for role in allowed_roles
         }:

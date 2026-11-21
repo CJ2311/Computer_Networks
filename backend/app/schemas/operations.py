@@ -50,6 +50,22 @@ class LoanPolicyInput(OperationInput):
     allow_offsite: bool = Field(strict=True)
 
 
+class LoanPolicyResponse(BaseModel):
+    equipment_id: UUID
+    allow_offsite: bool
+
+
+class CheckoutDestinationResponse(BaseModel):
+    checkout_id: UUID
+    destination: str | None
+
+
+class StudentLookupResponse(BaseModel):
+    id: UUID
+    college_id: str
+    full_name: str
+
+
 class LedgerResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID

@@ -21,9 +21,9 @@ from backend.app.services.borrowing_history import get_borrowing_history, list_b
 @pytest.fixture
 def history():
     now = datetime(2026, 11, 2, 12, tzinfo=timezone.utc)
-    user = User(id=uuid4(), role="STUDENT", is_active=True)
+    user = User(id=uuid4(), role="FACULTY", is_active=True)
     row = dict(id=uuid4(), asset_id=uuid4(), equipment_id=uuid4(), asset_code="TEST-01",
-               equipment_name="Sensor", identifier_snapshot_status="CAPTURED", student_id=user.id, issued_by=uuid4(),
+               equipment_name="Sensor", identifier_snapshot_status="CAPTURED", student_id=uuid4(), issued_by=uuid4(),
                checked_out_at=now - timedelta(days=1), due_at=now + timedelta(days=1),
                returned_at=None, returned_to=None, status="BORROWED",
                is_currently_overdue=False, was_returned_late=False)
@@ -48,12 +48,14 @@ def assert_read_only(db):
 
 
 @pytest.mark.parametrize("detail", [False, True])
-def test_student_scope_is_in_sql_and_clock_is_read_once(history, detail):
+def test_staff_history_filter_and_clock_is_read_once(history, detail):
     db, user, row, now = history
-    response = get_borrowing_history(db, user, row["id"]) if detail else list_borrowing_history(db, user, HistoryFilters())
+    response = get_borrowing_history(db, user, row["id"]) if detail else list_borrowing_history(db, user, HistoryFilters(student_id=row["student_id"]))
     statement = compiled_query(db)
-    assert "equipment_checkouts.student_id =" in str(statement)
-    assert user.id in statement.params.values()
+    if not detail:
+        assert "equipment_checkouts.student_id =" in str(statement)
+        assert row["student_id"] in statement.params.values()
+    assert user.id not in statement.params.values()
     assert response.as_of == now
     assert "clock_timestamp()" in str(db.scalar.call_args.args[0])
     db.scalar.assert_called_once()
@@ -64,7 +66,7 @@ def test_student_scope_is_in_sql_and_clock_is_read_once(history, detail):
     assert not {"notes", "email", "full_name", "college_id"} & item.keys()
 
 
-@pytest.mark.parametrize("role", ["ADMIN", "FACULTY", "LAB_ASSISTANT"])
+@pytest.mark.parametrize("role", ["FACULTY", "LAB_ASSISTANT"])
 @pytest.mark.parametrize("detail", [False, True])
 def test_staff_have_unrestricted_history_scope(history, role, detail):
     db, user, row, _ = history
@@ -77,8 +79,10 @@ def test_staff_have_unrestricted_history_scope(history, role, detail):
     assert_read_only(db)
 
 
-def test_student_foreign_borrower_filter_is_rejected_before_query(history):
+@pytest.mark.parametrize("role", ["STUDENT", "ADMIN"])
+def test_nonstaff_borrower_filter_is_rejected_before_query(history, role):
     db, user, _, _ = history
+    user.role = role
     with pytest.raises(HTTPException) as error:
         list_borrowing_history(db, user, HistoryFilters(student_id=uuid4()))
     assert error.value.status_code == 403
@@ -101,11 +105,11 @@ def test_inactive_and_unknown_users_rejected(history, role):
     db.execute.assert_not_called()
 
 
-@pytest.mark.parametrize("role", ["STUDENT", "FACULTY"])
+@pytest.mark.parametrize("role", ["LAB_ASSISTANT", "FACULTY"])
 def test_borrower_filter_and_all_other_filters_are_bound_in_sql(history, role):
     db, user, row, now = history
     user.role = role
-    target = user.id if role == "STUDENT" else uuid4()
+    target = uuid4()
     filters = HistoryFilters(
         equipment_id=row["equipment_id"], asset_id=row["asset_id"], student_id=target,
         status="BORROWED", overdue=True, checked_out_from=now - timedelta(days=2),
@@ -150,14 +154,14 @@ def test_bounded_pagination_and_empty_pages(history, count, limit, more):
     assert limit + 1 in compiled_query(db).params.values()
 
 
-def test_missing_and_foreign_student_records_have_the_same_404(history):
+def test_missing_history_records_return_404_to_staff(history):
     db, user, _, _ = history
     db.execute.return_value.mappings.return_value.one_or_none.return_value = None
     with pytest.raises(HTTPException) as error:
         get_borrowing_history(db, user, uuid4())
     assert error.value.status_code == 404
     assert error.value.detail == "Checkout not found"
-    assert "equipment_checkouts.student_id =" in str(compiled_query(db))
+    assert "equipment_checkouts.student_id =" not in str(compiled_query(db))
 
 
 @pytest.mark.parametrize("data", [
@@ -192,7 +196,7 @@ def history_http(history, monkeypatch):
 
     app.dependency_overrides[get_db] = sessions
 
-    def request(query=None, detail=False, header="DEV-STUDENT", path_id=None):
+    def request(query=None, detail=False, header="DEV-FACULTY", path_id=None):
         # Authentication uses the actual existing dependency and a mocked DB lookup.
         db.scalar.side_effect = [user, now]
 
@@ -228,6 +232,11 @@ def test_http_permissions_and_read_only(history, history_http, detail, role, hea
     db, user, _, _ = history
     user.role = role
     status, response = history_http(detail=detail, header=header)
+    if role in {"STUDENT", "ADMIN"}:
+        assert status == 401
+        db.execute.assert_not_called()
+        assert_read_only(db)
+        return
     assert status == 200
     assert "as_of" in response
     assert_read_only(db)
@@ -235,7 +244,7 @@ def test_http_permissions_and_read_only(history, history_http, detail, role, hea
 
 @pytest.mark.parametrize("detail", [False, True])
 @pytest.mark.parametrize("header, active, expected", [(None, True, 401), ("DEV-UNKNOWN", True, 401),
-                                                    ("DEV-STUDENT", False, 403)])
+                                                    ("DEV-FACULTY", False, 403)])
 def test_http_rejects_missing_invalid_and_inactive_auth(history, history_http, detail, header, active, expected):
     db, user, _, _ = history
     user.is_active = active
@@ -254,7 +263,8 @@ def test_http_filter_errors_are_422(history, history_http, query):
     history[0].execute.assert_not_called()
 
 
-def test_http_foreign_borrower_query_is_403(history, history_http):
+def test_http_student_cannot_bypass_eligibility_with_staff_header(history, history_http):
+    history[1].role = "STUDENT"
     assert history_http({"student_id": str(uuid4())})[0] == 403
     history[0].execute.assert_not_called()
 

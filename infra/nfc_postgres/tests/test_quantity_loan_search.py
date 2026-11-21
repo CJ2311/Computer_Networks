@@ -32,9 +32,8 @@ def _verify_reader_access(user: User | None):
     """Role-based access check matching the quantity loans API dependency."""
     if user is None or not getattr(user, "is_active", False):
         raise HTTPException(status_code=401, detail="Authentication required")
-    if user.role not in (UserRole.ADMIN, UserRole.FACULTY, UserRole.LAB_ASSISTANT, UserRole.STUDENT):
-        raise HTTPException(status_code=403, detail="Forbidden: Active user required")
-    return user
+    from backend.app.auth.dependencies import require_application_staff
+    return require_application_staff(user)
 
 
 @pytest.fixture
@@ -334,27 +333,33 @@ def test_scenario_11_combining_all_filters_including_overdue(loan_env, monkeypat
 
 
 def test_scenario_12_student_viewing_own_loans_without_student_id(loan_env):
-    """Scenario 12: Student viewing loans without student_id sees only their own loans."""
+    """Scenario 12: Staff filter borrowers; students cannot view application history."""
     c = loan_env
     with Session(c.engine) as db:
         l1 = _issue(db, c, c.eq1.id, c.student1.id, 1)
         l2 = _issue(db, c, c.eq1.id, c.student2.id, 1)
 
     with Session(c.engine) as db:
-        page = list_quantity(db, c.student1)
+        with pytest.raises(HTTPException) as error:
+            list_quantity(db, c.student1)
+        assert error.value.status_code == 403
+        page = list_quantity(db, c.faculty, student_id=c.student1.id)
         assert len(page["items"]) == 1
         assert page["items"][0].id == l1.id
         assert page["items"][0].student_id == c.student1.id
 
 
 def test_scenario_13_student_explicitly_filtering_by_own_student_id(loan_env):
-    """Scenario 13: Student explicitly filtering by their own student_id succeeds."""
+    """Scenario 13: Supplying an own borrower UUID cannot grant application access."""
     c = loan_env
     with Session(c.engine) as db:
         l1 = _issue(db, c, c.eq1.id, c.student1.id, 1)
 
     with Session(c.engine) as db:
-        page = list_quantity(db, c.student1, student_id=c.student1.id)
+        with pytest.raises(HTTPException) as error:
+            list_quantity(db, c.student1, student_id=c.student1.id)
+        assert error.value.status_code == 403
+        page = list_quantity(db, c.faculty, student_id=c.student1.id)
         assert len(page["items"]) == 1
         assert page["items"][0].id == l1.id
 
@@ -369,7 +374,7 @@ def test_scenario_14_student_filtering_by_another_student_returns_403(loan_env):
         with pytest.raises(HTTPException) as exc:
             list_quantity(db, c.student1, student_id=c.student2.id)
         assert exc.value.status_code == 403
-        assert "Cannot filter another borrower's history" in exc.value.detail
+        assert exc.value.detail == "Active authorized staff required"
 
 
 def test_scenario_15_student_cannot_see_other_student_via_combined_filters(loan_env):
@@ -380,12 +385,15 @@ def test_scenario_15_student_cannot_see_other_student_via_combined_filters(loan_
 
     with Session(c.engine) as db:
         # student1 queries for eq1 where only student2 has a loan
-        page = list_quantity(db, c.student1, equipment_id=c.eq1.id, status="BORROWED")
+        with pytest.raises(HTTPException) as error:
+            list_quantity(db, c.student1, equipment_id=c.eq1.id, status="BORROWED")
+        assert error.value.status_code == 403
+        page = list_quantity(db, c.faculty, student_id=c.student1.id, equipment_id=c.eq1.id, status="BORROWED")
         assert page["items"] == []
 
 
 def test_scenario_16_student_cannot_access_other_student_loan_detail(loan_env):
-    """Scenario 16: Student looking up another student's loan ID receives non-disclosing 404."""
+    """Scenario 16: Students are denied; staff can read borrower records and get 404 for missing IDs."""
     c = loan_env
     with Session(c.engine) as db:
         l_other = _issue(db, c, c.eq1.id, c.student2.id, 1)
@@ -393,19 +401,25 @@ def test_scenario_16_student_cannot_access_other_student_loan_detail(loan_env):
     with Session(c.engine) as db:
         with pytest.raises(HTTPException) as exc:
             list_quantity(db, c.student1, loan_id=l_other.id)
-        assert exc.value.status_code == 404
-        assert exc.value.detail == "Quantity loan not found"
+        assert exc.value.status_code == 403
+        assert list_quantity(db, c.faculty, loan_id=l_other.id).id == l_other.id
+        with pytest.raises(HTTPException) as missing:
+            list_quantity(db, c.faculty, loan_id=uuid4())
+        assert missing.value.status_code == 404 and missing.value.detail == "Quantity loan not found"
 
 
 def test_scenario_17_admin_access(loan_env):
-    """Scenario 17: ADMIN role has full listing access."""
+    """Scenario 17: ADMIN is denied while faculty retain complete listing access."""
     c = loan_env
     with Session(c.engine) as db:
         l1 = _issue(db, c, c.eq1.id, c.student1.id, 1)
         l2 = _issue(db, c, c.eq2.id, c.student2.id, 1)
 
     with Session(c.engine) as db:
-        page = list_quantity(db, c.admin_user)
+        with pytest.raises(HTTPException) as error:
+            list_quantity(db, c.admin_user)
+        assert error.value.status_code == 403
+        page = list_quantity(db, c.faculty)
         assert len(page["items"]) == 2
 
 

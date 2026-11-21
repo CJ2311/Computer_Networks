@@ -25,6 +25,8 @@ __all__ = [
 
 from .operations import ExternalIdentity, EquipmentLoanPolicy, LoanDestination, QuantityLoan, StockLedger, OverdueReminder
 from .missing_equipment import MissingEquipmentIncident, MissingEquipmentEvent
+from .scanners import EquipmentScanner, ScannerScanEvent
+from .student_nfc import StudentNFCCard
 
 __all__ += [
     "ExternalIdentity",
@@ -35,4 +37,7 @@ __all__ += [
     "OverdueReminder",
     "MissingEquipmentIncident",
     "MissingEquipmentEvent",
+    "EquipmentScanner",
+    "ScannerScanEvent",
+    "StudentNFCCard",
 ]

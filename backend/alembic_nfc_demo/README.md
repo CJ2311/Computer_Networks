@@ -2,7 +2,10 @@
 
 Ordinary commands continue to use alembic.ini and backend/alembic/env.py.
 The NFC deployment entry point is alembic_nfc_demo.ini. It loads its own env.py
-and discovers the existing seven revisions in backend/alembic/versions.
+and discovers revisions in backend/alembic/versions. The staged demo runner is
+pinned to the original seven-revision baseline `d6f2b8a931c0`; that directory
+also contains the later additive student NFC revision. The application runner
+uses both version directories and targets `f6c1a8d420be`.
 No revisions are copied and no production ownership checks are changed.
 
 Programmatic callers must select Config("alembic_nfc_demo.ini") and supply:
@@ -23,6 +26,10 @@ The environment does not commit or roll back caller-owned transactions. Without
 an existing transaction, Alembic manages its own transaction normally. Autocommit
 connections are not an appropriate deployment configuration.
 
-The staged deployment runner, administrator authentication, live preflight,
-privilege provisioning, and PostgreSQL deployment verification remain separate
-work. Do not use an unreviewed upgrade-to-head procedure for the ownership split.
+The staged deployment runner provides administrator authentication, live preflight,
+privilege provisioning and deployment verification outside this environment module.
+Fresh/populated upgrades passed the final isolated verification (312 passed,
+0 failed, 0 skipped, exit code 0), as supplied by the project owner. Do not use an
+unreviewed upgrade-to-head procedure for the ownership split. See the
+[deployment guide](../../docs/backend/DEPLOYMENT.md) and
+[handover](../../docs/backend/BACKEND_HANDOVER.md).

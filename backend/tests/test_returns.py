@@ -248,8 +248,8 @@ def test_route_uses_existing_role_dependency(role, allowed):
 @pytest.mark.parametrize("role, active, header, data, expected", [
     ("FACULTY", True, "DEV-FACULTY", {"condition_status": "WORKING"}, 200),
     ("LAB_ASSISTANT", True, "DEV-ASSISTANT", {"condition_status": "DAMAGED"}, 200),
-    ("STUDENT", True, "DEV-STUDENT", {"condition_status": "WORKING"}, 403),
-    ("ADMIN", True, "DEV-ADMIN", {"condition_status": "WORKING"}, 403),
+    ("STUDENT", True, "DEV-STUDENT", {"condition_status": "WORKING"}, 401),
+    ("ADMIN", True, "DEV-ADMIN", {"condition_status": "WORKING"}, 401),
     ("FACULTY", False, "DEV-FACULTY", {"condition_status": "WORKING"}, 403),
     ("LAB_ASSISTANT", False, "DEV-ASSISTANT", {"condition_status": "WORKING"}, 403),
     ("FACULTY", True, None, {"condition_status": "WORKING"}, 401),

@@ -36,10 +36,10 @@ class User(Base):
         nullable=False,
     )
 
-    email: Mapped[str] = mapped_column(
+    email: Mapped[str | None] = mapped_column(
         String(255),
         unique=True,
-        nullable=False,
+        nullable=True,
     )
 
     role: Mapped[str] = mapped_column(
@@ -63,6 +63,7 @@ class User(Base):
     )
 
     __table_args__ = (
+        CheckConstraint("role = 'STUDENT' OR email IS NOT NULL", name="ck_users_staff_email"),
         CheckConstraint(
             "role IN ('ADMIN', 'FACULTY', 'LAB_ASSISTANT', 'STUDENT')",
             name="ck_users_role",

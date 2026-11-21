@@ -252,6 +252,11 @@ def test_registration_http_all_authorized_roles(case, path, role, header):
     case.staff.role = role
     payload = equipment_payload() if path == "/equipment" else asset_payload(case.equipment.id)
     status, response = post_json(case.app, path, payload, header)
+    if role == "ADMIN":
+        assert status == 401
+        case.db.add.assert_not_called()
+        case.db.commit.assert_not_called()
+        return
     assert status == 201 and UUID(response["id"])
     if path == "/equipment":
         assert response["tracking_type"] == "INDIVIDUAL" and response["created_at"].endswith("Z")
@@ -265,9 +270,9 @@ def test_registration_http_all_authorized_roles(case, path, role, header):
 @pytest.mark.parametrize("header, role, active, client, enabled, expected", [
     (None, "FACULTY", True, "127.0.0.1", True, 401),
     ("DEV-UNKNOWN", "FACULTY", True, "127.0.0.1", True, 401),
-    ("DEV-STUDENT", "STUDENT", True, "127.0.0.1", True, 403),
+    ("DEV-STUDENT", "STUDENT", True, "127.0.0.1", True, 401),
     ("DEV-FACULTY", "FACULTY", False, "127.0.0.1", True, 403),
-    ("DEV-ADMIN", "ADMIN", False, "127.0.0.1", True, 403),
+    ("DEV-ADMIN", "ADMIN", False, "127.0.0.1", True, 401),
     ("DEV-ASSISTANT", "LAB_ASSISTANT", False, "127.0.0.1", True, 403),
     ("DEV-FACULTY", "FACULTY", True, "192.0.2.1", True, 403),
     ("DEV-FACULTY", "FACULTY", True, "127.0.0.1", False, 403),
@@ -320,10 +325,11 @@ def test_authentication_requires_an_existing_user_record(case, path):
 
 
 @pytest.mark.parametrize("path", ["/equipment", "/assets"])
-def test_admin_header_does_not_override_persisted_student_role(case, path):
+def test_staff_header_does_not_override_persisted_student_role(case, path):
     case.staff.role = "STUDENT"
     data = equipment_payload() if path == "/equipment" else asset_payload(case.equipment.id)
-    assert post_json(case.app, path, data, "DEV-ADMIN")[0] == 403
+    assert post_json(case.app, path, data, "DEV-FACULTY")[0] == 403
+    case.db.scalar.assert_called_once()
     case.db.add.assert_not_called()
     case.db.commit.assert_not_called()
 
