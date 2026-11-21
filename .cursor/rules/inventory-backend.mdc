@@ -1,0 +1,179 @@
+---
+description: Backend development, security, testing, and database safety requirements for the Computer Networks Inventory Management System.
+alwaysApply: true
+---
+
+# Project Context
+
+This repository contains a production-oriented IoT Laboratory Inventory Management System for a college.
+
+The system manages equipment registration, individual assets, quantity stock, student borrowing, returns, maintenance, missing equipment, NFC identification, inventory audits, and reporting.
+
+The application is intended for real institutional use, not merely a demonstration.
+
+## Technology Stack
+
+- Python 3.12
+- FastAPI
+- PostgreSQL 18
+- SQLAlchemy
+- Alembic
+- Pydantic
+- Pytest
+- Docker for isolated integration testing
+- Windows 11 development environment
+
+## Responsibilities
+
+The repository is maintained by a team.
+
+The current developer is responsible for backend development.
+
+Frontend implementation belongs to another team member.
+
+Hardware and NFC integration belong to a separate team.
+
+Do not modify frontend code unless explicitly requested.
+
+Do not implement another team member's assigned responsibilities without explicit authorization.
+
+## Critical Database Safety
+
+The following existing host PostgreSQL databases are protected:
+
+- inventory_db
+- inventory_checkout_test
+- inventory_nfc_demo
+
+Never connect to, read, modify, migrate, truncate, reset, or drop these databases during automated testing or exploratory development without explicit user authorization.
+
+Never substitute a protected host database for a disposable test database.
+
+PostgreSQL integration tests must use the existing isolated Docker testing infrastructure.
+
+Before running integration tests:
+
+1. Inspect the existing disposable Docker test harness.
+2. Verify database isolation.
+3. Verify no host PostgreSQL ports are exposed.
+4. Verify no protected host database volumes are mounted.
+5. Follow the harness's explicit opt-in requirements.
+6. Ensure cleanup affects only disposable resources.
+
+Never run destructive database commands without explicit approval.
+
+## Security Requirements
+
+Preserve role-based authorization for:
+
+- ADMIN
+- FACULTY
+- LAB_ASSISTANT
+- STUDENT
+
+Students must only access their own borrowing records.
+
+Never weaken authentication, authorization, ownership checks, or audit logging.
+
+Enforce critical security rules in backend services, not only in routers or frontend components.
+
+Use parameterized database queries.
+
+Do not expose credentials, tokens, or sensitive student information in logs.
+
+Do not hardcode production credentials.
+
+## API Compatibility
+
+Preserve existing endpoint behavior unless a breaking change is explicitly approved.
+
+Do not change:
+
+- Existing response models
+- Pagination contracts
+- Authentication requirements
+- Existing query parameter semantics
+- Error response behavior
+
+without explaining and obtaining approval.
+
+Prefer minimal, targeted changes.
+
+## Database Integrity
+
+Preserve existing transaction boundaries.
+
+Respect database triggers, constraints, and immutable audit records.
+
+Do not directly update immutable custody or inventory transaction records.
+
+Do not create Alembic migrations unless schema changes genuinely require them.
+
+Never execute migrations against protected host databases without explicit approval.
+
+## Testing
+
+Use database-free tests during ordinary development.
+
+Use isolated PostgreSQL integration tests when database behavior must be verified.
+
+Never run legacy tests that connect to protected host databases.
+
+All test commands must have explicit timeouts.
+
+If a test hangs:
+
+1. Stop the test process.
+2. Capture diagnostic evidence.
+3. Identify the cause.
+4. Report the blocker.
+
+Do not repeatedly restart hanging tests.
+
+Never remove, skip, or weaken tests merely to obtain a passing result.
+
+Report actual test counts, failures, skips, and exit codes.
+
+Do not claim tests passed without completed execution evidence.
+
+## Git Safety
+
+Never automatically commit or push changes.
+
+Never force-push.
+
+Never reset or discard local changes without explicit permission.
+
+Before implementing a feature:
+
+1. Inspect relevant existing code.
+2. Explain the proposed change.
+3. Identify affected files.
+4. Identify security and compatibility risks.
+5. Implement only the approved scope.
+6. Run appropriate tests.
+7. Report the results.
+
+## Development Workflow
+
+Work incrementally.
+
+Prefer one clearly scoped task at a time.
+
+Do not launch unnecessary parallel agents.
+
+Do not introduce new frameworks or dependencies without justification.
+
+Do not perform unrelated refactoring.
+
+When a task is complete, report:
+
+- Files changed
+- Behavior implemented
+- Security considerations
+- Tests executed
+- Test results
+- Remaining issues
+- Git status
+
+Stop and request clarification when a proposed action could affect production data or violate these rules.
